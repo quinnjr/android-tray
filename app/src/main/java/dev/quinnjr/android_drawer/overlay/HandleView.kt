@@ -49,10 +49,12 @@ class HandleView(
         invalidate()
     }
 
+    // A fresh Rect only when the size changes: the system diffs against what it last received.
+    @SuppressLint("DrawAllocation")
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
         // Win the edge swipe over the system back gesture, but only within the handle itself.
-        systemGestureExclusionRects = listOf(Rect(0, 0, width, height))
+        if (changed) systemGestureExclusionRects = listOf(Rect(0, 0, width, height))
     }
 
     override fun onDraw(canvas: Canvas) {

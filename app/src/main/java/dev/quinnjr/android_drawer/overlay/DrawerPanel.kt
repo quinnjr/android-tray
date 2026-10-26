@@ -43,8 +43,8 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -110,7 +110,7 @@ private fun Panel(
     val dismissPx = with(LocalDensity.current) { DISMISS_DRAG.toPx() }
     val offset = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
-    val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.6f).dp
+    val maxHeight = with(LocalDensity.current) { (LocalWindowInfo.current.containerSize.height * 0.6f).toDp() }
 
     Surface(
         shape = RoundedCornerShape(28.dp),
