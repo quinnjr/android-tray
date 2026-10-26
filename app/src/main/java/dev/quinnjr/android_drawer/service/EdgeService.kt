@@ -1,15 +1,23 @@
 package dev.quinnjr.android_drawer.service
 
+import android.app.AppOpsManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ComponentCallbacks
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.content.res.Configuration
+import android.hardware.display.DisplayManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
+import android.util.Log
+import android.view.Display
+import android.view.WindowManager
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import dev.quinnjr.android_drawer.R
@@ -22,6 +30,7 @@ import dev.quinnjr.android_drawer.ui.MainActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
@@ -31,27 +40,59 @@ class EdgeService : LifecycleService() {
     private lateinit var repo: SettingsRepository
     private lateinit var host: OverlayHost
     private lateinit var catalog: AppCatalog
-    private var drawerApps: List<LaunchableApp> = emptyList()
+    private lateinit var overlayContext: Context
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** Drawer contents, resolved ahead of time; null until the first resolve finishes. */
+    private var drawerApps: List<LaunchableApp>? = null
+    private var foreground = false
+    private var retryScheduled = false
+
+    private val appOps by lazy { getSystemService(AppOpsManager::class.java) }
+    private val overlayPermissionListener = AppOpsManager.OnOpChangedListener { _, pkg ->
+        // Revoking "Display over other apps" doesn't kill us; the windows just vanish.
+        if (pkg == packageName) mainHandler.post { if (!Settings.canDrawOverlays(this)) stopSelf() }
+    }
+
+    private val configCallbacks = object : ComponentCallbacks {
+        override fun onConfigurationChanged(newConfig: Configuration) = host.relayout()
+
+        @Deprecated("Deprecated in Java")
+        override fun onLowMemory() = Unit
+    }
 
     override fun onCreate() {
         super.onCreate()
-        startInForeground()
+        // After a system restart (START_STICKY) we may lack the foreground-start exemption until
+        // the handle is visible, so a failure here is retried once the handle is shown.
+        foreground = tryStartForeground()
+        overlayContext = createOverlayContext()
         repo = SettingsRepository(this)
         catalog = AppCatalog(this)
         host = OverlayHost(
-            context = this,
+            context = overlayContext,
             onOpen = ::openDrawer,
             onHandleDropped = { side, fraction ->
                 lifecycleScope.launch { repo.update { it.copy(side = side, yFraction = fraction) } }
             },
             onFatal = ::stopSelf,
         )
+        if (overlayContext !== this) overlayContext.registerComponentCallbacks(configCallbacks)
+        appOps.startWatchingMode(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, packageName, overlayPermissionListener)
         lifecycleScope.launch {
             repo.settings.collect { s ->
                 if (!s.enabled || !Settings.canDrawOverlays(this@EdgeService)) {
                     stopSelf()
                 } else {
                     host.showHandle(s)
+                    if (!foreground && !retryScheduled) {
+                        retryScheduled = true
+                        // The exemption needs the handle actually on screen, i.e. after a frame.
+                        mainHandler.postDelayed({
+                            foreground = tryStartForeground()
+                            if (!foreground) stopSelf()
+                        }, FOREGROUND_RETRY_MS)
+                    }
                 }
             }
         }
@@ -67,26 +108,43 @@ class EdgeService : LifecycleService() {
     }
 
     private fun openDrawer() {
-        host.openDrawer(
-            apps = drawerApps,
-            onLaunch = { app, bounds -> catalog.launch(app, bounds) },
-            onAddApps = {
-                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            },
-        )
+        lifecycleScope.launch {
+            // Opened before the first resolve finished: resolve now rather than show "No apps yet".
+            val apps = drawerApps ?: withContext(Dispatchers.Default) {
+                catalog.resolve(repo.settings.first().apps)
+            }
+            host.openDrawer(
+                apps = apps,
+                onLaunch = { app, bounds -> catalog.launch(app, bounds) },
+                onAddApps = {
+                    startActivity(Intent(this@EdgeService, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                },
+            )
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        host.relayout()
+        if (overlayContext === this) host.relayout()
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null)
+        appOps.stopWatchingMode(overlayPermissionListener)
+        if (overlayContext !== this) overlayContext.unregisterComponentCallbacks(configCallbacks)
         host.removeAll()
         super.onDestroy()
     }
 
-    private fun startInForeground() {
+    /** Overlay windows get a dedicated window context on API 30+, as the platform recommends. */
+    private fun createOverlayContext(): Context {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return this
+        val display = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY) ?: return this
+        return createDisplayContext(display)
+            .createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null)
+    }
+
+    private fun tryStartForeground(): Boolean {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, getString(R.string.channel_name), NotificationManager.IMPORTANCE_LOW),
@@ -100,16 +158,25 @@ class EdgeService : LifecycleService() {
             .setContentIntent(openSettings)
             .setOngoing(true)
             .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            true
+        } catch (e: IllegalStateException) {
+            // ForegroundServiceStartNotAllowedException is an IllegalStateException.
+            Log.w(TAG, "Foreground start not allowed yet", e)
+            false
         }
     }
 
     companion object {
+        private const val TAG = "EdgeDrawer"
         private const val CHANNEL_ID = "edge_handle"
         private const val NOTIFICATION_ID = 1
+        private const val FOREGROUND_RETRY_MS = 500L
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, EdgeService::class.java))

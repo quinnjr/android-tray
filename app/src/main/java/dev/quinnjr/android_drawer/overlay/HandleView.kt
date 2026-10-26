@@ -23,7 +23,8 @@ class HandleView(
     private val onDragMove: (rawX: Float, rawY: Float) -> Unit,
     private val onDrop: (side: Side, rawY: Float) -> Unit,
 ) : View(context) {
-    private val density = resources.displayMetrics.density
+    // Read live: the display size (and so density) can change while this view is reused.
+    private val density get() = resources.displayMetrics.density
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pill = RectF()
     private var side = Side.RIGHT

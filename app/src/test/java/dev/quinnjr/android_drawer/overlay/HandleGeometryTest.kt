@@ -1,5 +1,6 @@
 package dev.quinnjr.android_drawer.overlay
 
+import dev.quinnjr.android_drawer.settings.Side
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -29,5 +30,13 @@ class HandleGeometryTest {
         assertEquals(200, clampHandleHeightDp(250))
         assertEquals(60, clampHandleHeightDp(10))
         assertEquals(120, clampHandleHeightDp(120))
+    }
+
+    @Test
+    fun `handleX sits inside side navigation bar insets`() {
+        assertEquals(1080 - 60, handleX(Side.RIGHT, 1080, 60, insetLeft = 0, insetRight = 0))
+        assertEquals(2400 - 126 - 60, handleX(Side.RIGHT, 2400, 60, insetLeft = 0, insetRight = 126))
+        assertEquals(126, handleX(Side.LEFT, 2400, 60, insetLeft = 126, insetRight = 0))
+        assertEquals(0, handleX(Side.LEFT, 1080, 60, insetLeft = 0, insetRight = 0))
     }
 }

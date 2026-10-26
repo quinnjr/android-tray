@@ -9,6 +9,7 @@ import android.util.Size
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.view.WindowManager
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.ui.platform.ComposeView
@@ -99,16 +100,22 @@ class OverlayHost(
                 side = s.side,
                 centerYPx = centerY,
                 visible = state,
+                // Cells stay clickable during the exit animation; ignore taps once closing.
                 onLaunch = { app, bounds ->
-                    onLaunch(app, bounds)
-                    closeDrawer()
+                    if (state.targetState) {
+                        onLaunch(app, bounds)
+                        closeDrawer()
+                    }
                 },
                 onAddApps = {
-                    onAddApps()
-                    closeDrawer()
+                    if (state.targetState) {
+                        onAddApps()
+                        closeDrawer()
+                    }
                 },
                 onDismiss = ::closeDrawer,
-                onHidden = ::removeDrawer,
+                // Leave the composition before tearing down its window.
+                onHidden = { root.post { if (drawer === root) removeDrawer() } },
             )
         }
         drawer = root
@@ -142,6 +149,13 @@ class OverlayHost(
         Size(dm.widthPixels, dm.heightPixels)
     }
 
+    private fun navBarInsets(): Rect = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        val i = wm.currentWindowMetrics.windowInsets.getInsets(WindowInsets.Type.navigationBars())
+        Rect(i.left, i.top, i.right, i.bottom)
+    } else {
+        Rect()
+    }
+
     private fun removeDrawer() {
         drawer?.let(::remove)
         drawerOwner?.destroy()
@@ -170,7 +184,8 @@ class OverlayHost(
     private fun placeHandle(s: DrawerSettings, screen: Size) {
         handleParams.width = handleWidthPx
         handleParams.height = handleHeightPx
-        handleParams.x = if (s.side == Side.LEFT) 0 else screen.width - handleWidthPx
+        val nav = navBarInsets()
+        handleParams.x = handleX(s.side, screen.width, handleWidthPx, nav.left, nav.right)
         handleParams.y = handleTop(s.yFraction, screen.height, handleHeightPx)
     }
 

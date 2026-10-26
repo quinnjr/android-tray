@@ -1,6 +1,7 @@
 package dev.quinnjr.android_drawer.overlay
 
 import android.content.Context
+import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
@@ -43,6 +44,9 @@ class FullscreenWatcher(
             flags = flags and WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS.inv()
             width = 1
             height = WindowManager.LayoutParams.MATCH_PARENT
+            gravity = Gravity.TOP or Gravity.START
+            // Android 12+ blocks touches passing through other apps' overlays above 0.8 opacity.
+            alpha = 0f
         })
     }
 
