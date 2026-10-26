@@ -1,7 +1,6 @@
 package dev.quinnjr.android_drawer.overlay
 
 import android.graphics.Rect
-import android.os.Build
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.MutableTransitionState
@@ -14,7 +13,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,10 +29,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -50,7 +44,6 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -59,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.settings.Side
+import dev.quinnjr.android_drawer.ui.theme.AppTheme
 import kotlinx.coroutines.launch
 
 private val DISMISS_DRAG = 80.dp
@@ -81,7 +75,7 @@ fun DrawerPanel(
     LaunchedEffect(visible.isIdle, visible.currentState) {
         if (visible.isIdle && !visible.currentState && !visible.targetState) onHidden()
     }
-    DrawerTheme {
+    AppTheme {
         val fromRight = side == Side.RIGHT
         Box(
             Modifier
@@ -202,17 +196,4 @@ private fun Modifier.centerOn(centerYPx: Int) = layout { measurable, constraints
     val maxTop = (parentHeight - placeable.height - margin).coerceAtLeast(margin)
     val top = (centerYPx - placeable.height / 2).coerceIn(margin, maxTop)
     layout(placeable.width, parentHeight) { placeable.place(0, top) }
-}
-
-@Composable
-private fun DrawerTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
-    val context = LocalContext.current
-    val scheme = when {
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-            if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        dark -> darkColorScheme()
-        else -> lightColorScheme()
-    }
-    MaterialTheme(colorScheme = scheme, content = content)
 }
