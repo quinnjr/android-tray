@@ -42,6 +42,8 @@ class OverlayHost(
     private var drawerOwner: OverlayLifecycleOwner? = null
     private var drawerState: MutableTransitionState<Boolean>? = null
     private var fullscreen = false
+    private val watcher = FullscreenWatcher(context, ::add, ::remove, ::setFullscreen)
+    private var watching = false
 
     val handleWidthPx get() = (HANDLE_TOUCH_WIDTH_DP * density).toInt()
     val handleHeightPx get() = (clampHandleHeightDp(settings?.handleHeightDp ?: 120) * density).toInt()
@@ -60,6 +62,10 @@ class OverlayHost(
         placeHandle(s, screen)
         applyHandleVisibility()
         if (view in added) update(view, handleParams) else add(view, handleParams)
+        if (!watching) {
+            watching = true
+            watcher.start()
+        }
     }
 
     /** Re-applies the stored position, e.g. after rotation. */
@@ -122,6 +128,8 @@ class OverlayHost(
 
     fun removeAll() {
         removeDrawer()
+        watcher.stop()
+        watching = false
         handle?.let(::remove)
         handle = null
     }
