@@ -2,12 +2,17 @@ package dev.quinnjr.android_drawer.overlay
 
 import android.content.Context
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.os.Build
 import android.util.Log
 import android.util.Size
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.ui.platform.ComposeView
+import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.Side
 
@@ -26,15 +31,21 @@ class OverlayHost(
 ) {
     private val wm = context.getSystemService(WindowManager::class.java)
     private val density get() = context.resources.displayMetrics.density
+    private val added = mutableSetOf<View>()
 
     private var settings: DrawerSettings? = null
     private var handle: HandleView? = null
-    private val handleParams = overlayParams(
-        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-    ).apply { gravity = Gravity.TOP or Gravity.START }
+    private val handleParams = overlayParams(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+        .apply { gravity = Gravity.TOP or Gravity.START }
+
+    private var drawer: DrawerWindowView? = null
+    private var drawerOwner: OverlayLifecycleOwner? = null
+    private var drawerState: MutableTransitionState<Boolean>? = null
+    private var fullscreen = false
 
     val handleWidthPx get() = (HANDLE_TOUCH_WIDTH_DP * density).toInt()
-    val handleHeightPx get() = ((settings?.handleHeightDp ?: 120) * density).toInt()
+    val handleHeightPx get() = (clampHandleHeightDp(settings?.handleHeightDp ?: 120) * density).toInt()
+    val isDrawerOpen get() = drawer != null
 
     fun showHandle(s: DrawerSettings) {
         settings = s
@@ -47,7 +58,8 @@ class OverlayHost(
         val screen = screenSize()
         view.configure(s.side, s.handleColor, s.handleAlpha, screen.width)
         placeHandle(s, screen)
-        if (view.isAttachedToWindow) update(view, handleParams) else add(view, handleParams)
+        applyHandleVisibility()
+        if (view in added) update(view, handleParams) else add(view, handleParams)
     }
 
     /** Re-applies the stored position, e.g. after rotation. */
@@ -55,7 +67,61 @@ class OverlayHost(
         settings?.let(::showHandle)
     }
 
+    fun setFullscreen(value: Boolean) {
+        if (fullscreen == value) return
+        fullscreen = value
+        applyHandleVisibility()
+    }
+
+    fun openDrawer(
+        apps: List<LaunchableApp>,
+        onLaunch: (LaunchableApp, Rect?) -> Unit,
+        onAddApps: () -> Unit,
+    ) {
+        val s = settings ?: return
+        if (drawer != null) return
+        val state = MutableTransitionState(false).apply { targetState = true }
+        val owner = OverlayLifecycleOwner()
+        val root = DrawerWindowView(context, onBack = ::closeDrawer)
+        val compose = ComposeView(context)
+        owner.attachTo(root)
+        root.addView(compose, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        val centerY = handleTop(s.yFraction, screenSize().height, handleHeightPx) + handleHeightPx / 2
+        compose.setContent {
+            DrawerPanel(
+                apps = apps,
+                side = s.side,
+                centerYPx = centerY,
+                visible = state,
+                onLaunch = { app, bounds ->
+                    onLaunch(app, bounds)
+                    closeDrawer()
+                },
+                onAddApps = {
+                    onAddApps()
+                    closeDrawer()
+                },
+                onDismiss = ::closeDrawer,
+                onHidden = ::removeDrawer,
+            )
+        }
+        drawer = root
+        drawerOwner = owner
+        drawerState = state
+        applyHandleVisibility()
+        add(root, overlayParams(0).apply {
+            width = WindowManager.LayoutParams.MATCH_PARENT
+            height = WindowManager.LayoutParams.MATCH_PARENT
+        })
+    }
+
+    /** Starts the exit animation; the window is removed when it finishes. */
+    fun closeDrawer() {
+        drawerState?.targetState = false
+    }
+
     fun removeAll() {
+        removeDrawer()
         handle?.let(::remove)
         handle = null
     }
@@ -66,6 +132,31 @@ class OverlayHost(
     } else {
         val dm = context.resources.displayMetrics
         Size(dm.widthPixels, dm.heightPixels)
+    }
+
+    private fun removeDrawer() {
+        drawer?.let(::remove)
+        drawerOwner?.destroy()
+        drawer = null
+        drawerOwner = null
+        drawerState = null
+        applyHandleVisibility()
+    }
+
+    private fun applyHandleVisibility() {
+        val view = handle ?: return
+        val visible = !fullscreen && drawer == null
+        view.visibility = if (visible) View.VISIBLE else View.GONE
+        // A hidden handle must not swallow touches meant for the app underneath.
+        val flags = if (visible) {
+            handleParams.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        } else {
+            handleParams.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        }
+        if (flags != handleParams.flags) {
+            handleParams.flags = flags
+            if (view in added) update(view, handleParams)
+        }
     }
 
     private fun placeHandle(s: DrawerSettings, screen: Size) {
@@ -79,7 +170,7 @@ class OverlayHost(
         val view = handle ?: return
         val screen = screenSize()
         handleParams.x = (rawX - handleWidthPx / 2f).toInt().coerceIn(0, screen.width - handleWidthPx)
-        handleParams.y = (rawY - handleHeightPx / 2f).toInt().coerceIn(0, screen.height - handleHeightPx)
+        handleParams.y = (rawY - handleHeightPx / 2f).toInt().coerceIn(0, (screen.height - handleHeightPx).coerceAtLeast(0))
         update(view, handleParams)
     }
 
@@ -93,14 +184,17 @@ class OverlayHost(
         onHandleDropped(side, fraction)
     }
 
-    internal fun add(view: View, params: WindowManager.LayoutParams) = guard { wm.addView(view, params) }
-
-    internal fun update(view: View, params: WindowManager.LayoutParams) = guard {
-        if (view.isAttachedToWindow) wm.updateViewLayout(view, params)
+    private fun add(view: View, params: WindowManager.LayoutParams) = guard {
+        wm.addView(view, params)
+        added += view
     }
 
-    internal fun remove(view: View) = guard {
-        if (view.isAttachedToWindow) wm.removeViewImmediate(view)
+    private fun update(view: View, params: WindowManager.LayoutParams) = guard {
+        if (view in added) wm.updateViewLayout(view, params)
+    }
+
+    private fun remove(view: View) = guard {
+        if (added.remove(view)) wm.removeViewImmediate(view)
     }
 
     private inline fun guard(block: () -> Unit) {
@@ -114,6 +208,9 @@ class OverlayHost(
             onFatal()
         } catch (e: IllegalStateException) {
             Log.e(TAG, "Overlay window in a bad state", e)
+            onFatal()
+        } catch (e: IllegalArgumentException) {
+            Log.e(TAG, "Overlay window not attached", e)
             onFatal()
         }
     }

@@ -10,26 +10,37 @@ import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.os.Build
 import android.provider.Settings
-import android.util.Log
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import dev.quinnjr.android_drawer.R
+import dev.quinnjr.android_drawer.apps.AppCatalog
+import dev.quinnjr.android_drawer.apps.LaunchableApp
+import dev.quinnjr.android_drawer.apps.appsChanged
 import dev.quinnjr.android_drawer.overlay.OverlayHost
 import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.ui.MainActivity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class EdgeService : LifecycleService() {
     private lateinit var repo: SettingsRepository
     private lateinit var host: OverlayHost
+    private lateinit var catalog: AppCatalog
+    private var drawerApps: List<LaunchableApp> = emptyList()
 
     override fun onCreate() {
         super.onCreate()
         startInForeground()
         repo = SettingsRepository(this)
+        catalog = AppCatalog(this)
         host = OverlayHost(
             context = this,
-            onOpen = { Log.d(TAG, "open") },
+            onOpen = ::openDrawer,
             onHandleDropped = { side, fraction ->
                 lifecycleScope.launch { repo.update { it.copy(side = side, yFraction = fraction) } }
             },
@@ -44,6 +55,25 @@ class EdgeService : LifecycleService() {
                 }
             }
         }
+        // Resolve icons off the main thread ahead of time so the drawer opens instantly.
+        lifecycleScope.launch {
+            combine(
+                repo.settings.map { it.apps }.distinctUntilChanged(),
+                appsChanged(this@EdgeService).onStart { emit(Unit) },
+            ) { keys, _ -> keys }
+                .map { keys -> withContext(Dispatchers.Default) { catalog.resolve(keys) } }
+                .collect { drawerApps = it }
+        }
+    }
+
+    private fun openDrawer() {
+        host.openDrawer(
+            apps = drawerApps,
+            onLaunch = { app, bounds -> catalog.launch(app, bounds) },
+            onAddApps = {
+                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            },
+        )
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -78,7 +108,6 @@ class EdgeService : LifecycleService() {
     }
 
     companion object {
-        private const val TAG = "EdgeDrawer"
         private const val CHANNEL_ID = "edge_handle"
         private const val NOTIFICATION_ID = 1
 
