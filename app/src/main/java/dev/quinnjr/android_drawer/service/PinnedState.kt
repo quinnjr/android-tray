@@ -32,10 +32,14 @@ internal fun <T> KeptLoad<T>?.keep(next: LoadedPinned<T>?): KeptLoad<T>? = when 
     // Failed with a good load to keep: keep it (minus apps unpinned since), noting this attempt.
     next.apps == null && this?.load?.apps != null ->
         KeptLoad(load.restrictedTo(next.keys), reloading = false, failed = true)
-    // Some apps couldn't be listed this time: keep their earlier copy (if any) rather than drop them.
+    // Some apps couldn't be listed this time: keep their earlier copy (if any) rather than drop
+    // them, as a failure, so opening the drawer tries again. Not after that try fails too: then
+    // they're left out and the load counts as done (no endless retries for an app that never lists).
     next.apps != null && next.incomplete -> {
-        val earlier = this?.load?.apps.orEmpty().filterKeys { it in next.unknown }
-        KeptLoad(LoadedPinned(next.keys, earlier + next.apps, next.unknown), failed = true)
+        val retried = this?.load?.unknown.orEmpty()
+        val fresh = next.unknown - retried
+        val earlier = this?.load?.apps.orEmpty().filterKeys { it in fresh }
+        KeptLoad(LoadedPinned(next.keys, earlier + next.apps, next.unknown), failed = fresh.isNotEmpty())
     }
     else -> KeptLoad(next, failed = next.apps == null)
 }
@@ -50,17 +54,3 @@ internal fun <T> KeptLoad<T>.status(keys: Set<AppKey>): PinnedStatus = when {
     load.keys != keys -> PinnedStatus.RELOADING
     else -> PinnedStatus.CURRENT
 }
-
-/**
- * What a pinned-apps load depends on: the pinned [set] and when an app last changed ([changedAt],
- * elapsed-realtime ms; 0 if never). The display config and retries only trigger a load.
- */
-internal data class LoadInputs(val set: Set<AppKey>, val changedAt: Long) {
-    /**
-     * How long to wait before loading: until [settleMs] after the last app change, so a burst of
-     * changes (e.g. many updates) loads once, whatever else triggers the load meanwhile.
-     */
-    fun settleDelay(now: Long, settleMs: Long): Long =
-        if (changedAt == 0L) { 0L } else { (changedAt + settleMs - now).coerceAtLeast(0L) }
-}
-

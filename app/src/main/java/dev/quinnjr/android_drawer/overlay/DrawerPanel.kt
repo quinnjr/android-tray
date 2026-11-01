@@ -51,6 +51,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
@@ -374,6 +375,9 @@ private fun PinnedGrid(
     val draggedAppGone = drag.key != null && dragged != null && dragged.none { it.key == drag.key }
     val order = dragged ?: latest
     val currentOrder by rememberUpdatedState(order)
+    // Each shown app's place by its layout key, worked out once per order (not per pointer move).
+    val indexByKey = remember(order) { order.withIndex().associate { (i, app) -> app.key.encode() to i } }
+    val currentIndexByKey by rememberUpdatedState(indexByKey)
     // Finger position in grid coordinates, and where on the icon it grabbed.
     var pointer by remember { mutableStateOf(Offset.Zero) }
     var grab by remember { mutableStateOf(Offset.Zero) }
@@ -391,9 +395,9 @@ private fun PinnedGrid(
         val current = currentOrder
         val from = current.indexOfFirst { it.key == key }
         // Wait for the grid to lay out the previous move before moving again.
-        val laidOut = gridState.layoutInfo.visibleItemsInfo.any { it.index == from && it.key == key.encode() }
+        val laidOut = gridState.layoutInfo.visibleItemsInfo.any { it.index == from && currentIndexByKey[it.key] == from }
         // By key, not index: the layout may still be a frame behind the list (e.g. after a reload).
-        val to = appAt(pointer)?.let { info -> current.indexOfFirst { it.key.encode() == info.key } } ?: return
+        val to = appAt(pointer)?.let { info -> currentIndexByKey[info.key] } ?: return
         if (laidOut && to >= 0 && to != from) {
             drag.order = current.moved(from, to).map { it.key }
             drag.moved = true
@@ -417,6 +421,11 @@ private fun PinnedGrid(
             }
         }
         drag.clear()
+    }
+
+    // Gone mid-drag (e.g. the list turned empty, or the drawer closed): keep the moves made so far.
+    DisposableEffect(Unit) {
+        onDispose { finishDrag() }
     }
 
     if (draggedAppGone) {
@@ -452,7 +461,7 @@ private fun PinnedGrid(
                     val info = appAt(start) ?: return@detectDragGesturesAfterLongPress
                     val shown = currentOrder
                     // By key, not index: the layout may still be a frame behind a reload.
-                    val app = shown.firstOrNull { it.key.encode() == info.key } ?: return@detectDragGesturesAfterLongPress
+                    val app = currentIndexByKey[info.key]?.let(shown::getOrNull) ?: return@detectDragGesturesAfterLongPress
                     drag.begin(app.key, shown)
                     pointer = start
                     hasMoved = false
@@ -495,10 +504,11 @@ private fun PinnedGrid(
         items(order, key = { it.key.encode() }) { app ->
             val lifted = app.key == drag.key
             val cell = if (lifted) {
+                val layoutKey = remember(app.key) { app.key.encode() }
                 Modifier.zIndex(1f).graphicsLayer {
                     // Follow the finger, relative to wherever the grid currently places this cell.
                     val placed = gridState.layoutInfo.visibleItemsInfo
-                        .firstOrNull { it.key == app.key.encode() }?.offset?.toOffset() ?: Offset.Zero
+                        .firstOrNull { it.key == layoutKey }?.offset?.toOffset() ?: Offset.Zero
                     val shift = pointer - grab - placed
                     translationX = shift.x
                     translationY = shift.y

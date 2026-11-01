@@ -21,10 +21,14 @@ import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.movedAmongShown
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
@@ -47,6 +51,11 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Follows the activity's configuration (it is recreated on changes; this ViewModel isn't). */
     private val drawConfig = MutableStateFlow<DrawConfig?>(null)
+
+    private val failedSaves = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+
+    /** Emits when a change couldn't be saved (and so was undone). */
+    val saveFailures: SharedFlow<Unit> = failedSaves.asSharedFlow()
 
     val settings: StateFlow<DrawerSettings?> =
         repo.settings.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -94,7 +103,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setEnabled(enabled: Boolean) = viewModelScope.launch {
-        repo.update { it.copy(enabled = enabled) }
+        save { it.copy(enabled = enabled) }
         syncService()
     }
 
@@ -125,7 +134,13 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     fun unpin(unavailable: Set<AppKey>) = update { s -> s.copy(apps = s.apps - unavailable) }
 
     private fun update(transform: (DrawerSettings) -> DrawerSettings) {
-        viewModelScope.launch { repo.update(transform) }
+        viewModelScope.launch { save(transform) }
+    }
+
+    private suspend fun save(transform: (DrawerSettings) -> DrawerSettings) {
+        if (!repo.update(transform)) {
+            failedSaves.tryEmit(Unit)
+        }
     }
 }
 

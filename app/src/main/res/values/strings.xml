@@ -10,4 +10,5 @@
     <string name="pinned_unavailable">Your pinned apps aren\'t available right now</string>
     <string name="no_apps_yet">No apps yet</string>
     <string name="add_apps">Add apps</string>
+    <string name="settings_save_failed">Couldn\'t save your settings</string>
 </resources>

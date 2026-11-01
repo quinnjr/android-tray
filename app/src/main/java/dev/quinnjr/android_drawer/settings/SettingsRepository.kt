@@ -32,7 +32,6 @@ import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
 
 // A corrupt file (e.g. power lost mid-write) is replaced with defaults rather than crashing.
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
@@ -42,8 +41,9 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
 
 /**
  * The app's settings: one instance per process ([get]), holding them in memory. A change is applied
- * there at once (every reader sees it immediately), then saved; if saving fails it is reverted.
- * This process is the file's only writer, so after the first read memory is the truth.
+ * there at once (every reader sees it immediately), then saved; if saving fails, memory goes back
+ * to what is on disk. This process is the file's only writer, so after the first read memory is
+ * the truth.
  */
 class SettingsRepository private constructor(context: Context) {
     private val store = context.applicationContext.dataStore
@@ -51,6 +51,13 @@ class SettingsRepository private constructor(context: Context) {
     private val writeLock = Mutex()
     private val stateLock = Any()
     private val current = MutableStateFlow<DrawerSettings?>(null)
+    /** Counts changes made in memory (under [stateLock]). */
+    private var version = 0L
+    /** The settings as last read from or written to disk, and the [version] they were (under [stateLock]). */
+    private var onDisk: DrawerSettings? = null
+    private var onDiskVersion = 0L
+    /** Changes up to this [version] were undone after a failed save (under [stateLock]). */
+    private var undoneThrough = 0L
 
     /** The settings; null until first read. */
     val state: StateFlow<DrawerSettings?> = current.asStateFlow()
@@ -70,51 +77,71 @@ class SettingsRepository private constructor(context: Context) {
                 }
                 .first()
                 .toSettings()
-            current.compareAndSet(null, stored)
+            synchronized(stateLock) {
+                if (current.value == null) {
+                    onDisk = stored
+                    current.value = stored
+                }
+            }
         }
     }
 
     /**
      * Applies [transform] to the settings now (every reader sees it at once) and saves them; the
-     * result says whether saving worked. If it didn't, the change is reverted (unless a later one
-     * was made on top: its own save then writes this one too). Saves complete even if the caller
-     * goes away, so memory and disk can't drift apart. False straight away if the settings haven't
-     * been read yet.
+     * result says whether this change reached the disk. Each save writes the latest settings, so
+     * saves finishing out of order never leave an older value on disk. If saving fails, it's tried
+     * again with any later change made meanwhile; otherwise memory goes back to what is on disk.
+     * Saves complete even if the caller goes away. False straight away if the settings haven't been
+     * read yet.
      */
     fun change(transform: (DrawerSettings) -> DrawerSettings): Deferred<Boolean> {
-        val (before, next) = synchronized(stateLock) {
+        val mine = synchronized(stateLock) {
             val before = current.value ?: return CompletableDeferred(false)
-            val next = transform(before)
-            current.value = next
-            before to next
+            current.value = transform(before)
+            ++version
         }
-        return scope.async {
-            val saved = writeLock.withLock {
-                try {
-                    store.edit { prefs -> write(prefs, next) }
-                    true
-                } catch (e: Exception) {
-                    Log.e(TAG, "Could not save settings", e)
-                    false
+        return scope.async { writeLock.withLock { save(mine) } }
+    }
+
+    /** Saves the latest settings unless change [mine] is already on disk or undone (under [writeLock]). */
+    private suspend fun save(mine: Long): Boolean {
+        while (true) {
+            val (next, nextVersion) = synchronized(stateLock) {
+                // Already written by a later change's save (which wrote this one too), or undone
+                // after an earlier save failed.
+                if (onDiskVersion >= mine) {
+                    return true
                 }
+                if (undoneThrough >= mine) {
+                    return false
+                }
+                checkNotNull(current.value) to version
             }
-            if (!saved) {
+            try {
+                store.edit { prefs -> write(prefs, next) }
                 synchronized(stateLock) {
-                    if (current.value == next) {
-                        current.value = before
+                    onDisk = next
+                    onDiskVersion = nextVersion
+                }
+                return true
+            } catch (e: Exception) {
+                Log.e(TAG, "Could not save settings", e)
+                synchronized(stateLock) {
+                    // Nothing newer to try: back to what's on disk.
+                    if (version == nextVersion) {
+                        current.value = onDisk
+                        undoneThrough = nextVersion
+                        return false
                     }
                 }
+                // A later change came in meanwhile: try again with it.
             }
-            saved
         }
     }
 
-    /**
-     * [change], waiting for the save: true if it worked. Waits (briefly) for the first read; if the
-     * settings still can't be read, false.
-     */
+    /** [change], once the settings have been read, waiting for the save: true if it worked. */
     suspend fun update(transform: (DrawerSettings) -> DrawerSettings): Boolean {
-        withTimeoutOrNull(READ_WAIT_MS) { current.filterNotNull().first() } ?: return false
+        current.filterNotNull().first()
         return change(transform).await()
     }
 
@@ -160,6 +187,5 @@ class SettingsRepository private constructor(context: Context) {
         private val ICONS_LOCKED = booleanPreferencesKey("icons_locked")
         private const val RETRY_STEP_MS = 1_000L
         private const val MAX_RETRY_STEPS = 30L
-        private const val READ_WAIT_MS = 5_000L
     }
 }

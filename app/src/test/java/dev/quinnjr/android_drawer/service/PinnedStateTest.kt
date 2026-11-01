@@ -63,15 +63,6 @@ class PinnedStateTest {
     }
 
     @Test
-    fun `a load waits until the last app change has settled, whatever else triggers it`() {
-        val inputs = LoadInputs(setOf(a), changedAt = 1_000L)
-        assertEquals(300L, inputs.settleDelay(now = 1_200L, settleMs = 500L))
-        assertEquals(0L, inputs.settleDelay(now = 2_000L, settleMs = 500L))
-        assertEquals(0L, LoadInputs(setOf(a), changedAt = 0L).settleDelay(now = 100L, settleMs = 500L))
-    }
-
-
-    @Test
     fun `a failure kept through a change of the pinned set drops the apps unpinned since`() {
         val kept = null.keep(load(a, b, c)).keep(load(a, failed = true))!!
         assertEquals(setOf(a), kept.load.apps!!.keys)
@@ -92,5 +83,14 @@ class PinnedStateTest {
         val kept = good.keep(partial)!!
         assertEquals(listOf("a/a.A", "b/b.B", "c/c.C"), kept.load.ordered(listOf(a, b, c)))
         assertEquals(PinnedStatus.FAILED, kept.status(setOf(a, b, c)))
+    }
+
+    @Test
+    fun `an app still unlisted after its retry is left out and no longer counts as failed`() {
+        val good = null.keep(load(a, b))
+        val partial = LoadedPinned(setOf(a, b), mapOf(a to "a/a.A"), unknown = setOf(b))
+        val retried = good.keep(partial).keep(null).keep(partial)!!
+        assertEquals(listOf("a/a.A"), retried.load.ordered(listOf(a, b)))
+        assertEquals(PinnedStatus.CURRENT, retried.status(setOf(a, b)))
     }
 }
