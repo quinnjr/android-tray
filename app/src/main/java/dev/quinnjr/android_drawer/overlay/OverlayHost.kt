@@ -44,6 +44,7 @@ class OverlayHost(
     private var drawer: DrawerWindowView? = null
     private var drawerOwner: OverlayLifecycleOwner? = null
     private var drawerState: MutableTransitionState<Boolean>? = null
+    private var drawerClosed: (() -> Unit)? = null
     private var fullscreen = false
     private val watcher = FullscreenWatcher(context, ::add, ::remove, ::setFullscreen)
     private var watching = false
@@ -91,6 +92,8 @@ class OverlayHost(
         onLaunch: (LaunchableApp, Rect?) -> Unit,
         onReorder: (List<AppKey>) -> Unit,
         onOpenSettings: () -> Unit,
+        /** Called once the drawer has been removed. */
+        onClosed: () -> Unit,
     ) {
         val s = settings ?: return
         if (drawer != null) return
@@ -128,6 +131,7 @@ class OverlayHost(
             )
         }
         drawer = root
+        drawerClosed = onClosed
         drawerOwner = owner
         drawerState = state
         applyHandleVisibility()
@@ -166,12 +170,15 @@ class OverlayHost(
     }
 
     private fun removeDrawer() {
+        val closed = drawerClosed
+        drawerClosed = null
         drawer?.let(::remove)
         drawerOwner?.destroy()
         drawer = null
         drawerOwner = null
         drawerState = null
         applyHandleVisibility()
+        closed?.invoke()
     }
 
     private fun applyHandleVisibility() {
@@ -201,15 +208,16 @@ class OverlayHost(
     private fun dragHandleTo(rawX: Float, rawY: Float) {
         val view = handle ?: return
         val screen = screenSize()
-        handleParams.x = (rawX - handleWidthPx / 2f).toInt().coerceIn(0, screen.width - handleWidthPx)
-        handleParams.y = (rawY - handleHeightPx / 2f).toInt().coerceIn(0, (screen.height - handleHeightPx).coerceAtLeast(0))
+        val nav = navBarInsets()
+        handleParams.x = handleDragX(rawX, screen.width, handleWidthPx, nav.left, nav.right)
+        handleParams.y = handleTopAt(rawY, screen.height, handleHeightPx)
         update(view, handleParams)
     }
 
     private fun dropHandle(side: Side, rawY: Float) {
         val s = settings ?: return
         val screen = screenSize()
-        val top = (rawY - handleHeightPx / 2f).toInt()
+        val top = handleTopAt(rawY, screen.height, handleHeightPx)
         val fraction = yFractionFor(top, screen.height, handleHeightPx)
         // Snap immediately; the settings flow will confirm with the persisted values.
         showHandle(s.copy(side = side, yFraction = fraction))

@@ -39,4 +39,18 @@ class HandleGeometryTest {
         assertEquals(126, handleX(Side.LEFT, 2400, 60, insetLeft = 126, insetRight = 0))
         assertEquals(0, handleX(Side.LEFT, 1080, 60, insetLeft = 0, insetRight = 0))
     }
+
+    @Test
+    fun `dragged handle stays on screen and clear of side navigation bars`() {
+        assertEquals(500 - 30, handleDragX(500f, 2400, 60, insetLeft = 126, insetRight = 0))
+        assertEquals(126, handleDragX(10f, 2400, 60, insetLeft = 126, insetRight = 0))
+        assertEquals(2400 - 126 - 60, handleDragX(2399f, 2400, 60, insetLeft = 0, insetRight = 126))
+    }
+
+    @Test
+    fun `dragged handle top is centred on the finger and clamped`() {
+        assertEquals(400, handleTopAt(500f, 2000, 200))
+        assertEquals(0, handleTopAt(10f, 2000, 200))
+        assertEquals(1800, handleTopAt(1990f, 2000, 200))
+    }
 }

@@ -110,4 +110,23 @@ class HandleGestureTest {
         g.cancel()
         assertEquals(GestureResult.None, g.up(300f, 900f, 600L))
     }
+
+    @Test
+    fun `drop side is judged against the given screen width`() {
+        val g = gesture(Side.RIGHT)
+        assertEquals(Side.RIGHT, g.sideAt(900f))
+        // After rotating to a 2340px-wide screen, x=900 is in the left half.
+        assertEquals(Side.LEFT, g.sideAt(900f, screenWidth = 2340))
+    }
+
+    @Test
+    fun `isDragging follows the gesture`() {
+        val g = gesture(Side.RIGHT)
+        g.down(1070f, 500f, 0L)
+        assertFalse(g.isDragging)
+        assertTrue(g.tick(500L))
+        assertTrue(g.isDragging)
+        g.up(1070f, 600f, 600L)
+        assertFalse(g.isDragging)
+    }
 }

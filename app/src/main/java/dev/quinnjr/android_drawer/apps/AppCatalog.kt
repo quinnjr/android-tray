@@ -69,7 +69,8 @@ class AppCatalog(context: Context) {
      */
     fun resolve(keys: List<AppKey>): List<LaunchableApp> {
         val found = HashMap<AppKey, Pair<AppKey, LauncherActivityInfo>>()
-        for ((where, group) in keys.groupBy { it.userSerial to it.component.substringBefore('/') }) {
+        val wanted = keys.groupBy { it.userSerial to it.component.substringBefore('/') }.mapValues { it.value.toHashSet() }
+        for ((where, group) in wanted) {
             val (serial, pkg) = where
             val user = userManager.getUserForSerialNumber(serial) ?: continue
             if (!userManager.isUserUnlocked(user) || userManager.isQuietModeEnabled(user)) continue
@@ -194,15 +195,15 @@ private const val APPS_CHANGED_DEBOUNCE_MS = 500L
 
 /** [appsChanged] events, with a burst collapsed into one once it settles. */
 @OptIn(FlowPreview::class)
-fun Flow<Unit>.settled(): Flow<Unit> = debounce(APPS_CHANGED_DEBOUNCE_MS)
+fun <T> Flow<T>.settled(): Flow<T> = debounce(APPS_CHANGED_DEBOUNCE_MS)
 
 /**
- * Emits whenever an app is installed, removed or changed in any profile, or a profile
- * (work apps, Private Space) is paused, locked or made available again.
+ * Emits whenever an app is installed, removed or changed in any profile (its package name), or
+ * several apps or a whole profile (work apps, Private Space) change at once (null).
  */
-fun appsChanged(context: Context): Flow<Unit> = callbackFlow {
+fun appsChanged(context: Context): Flow<String?> = callbackFlow {
     val profileReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) { trySend(Unit) }
+        override fun onReceive(context: Context, intent: Intent) { trySend(null) }
     }
     val profileActions = IntentFilter().apply {
         addAction(Intent.ACTION_MANAGED_PROFILE_AVAILABLE)
@@ -217,11 +218,11 @@ fun appsChanged(context: Context): Flow<Unit> = callbackFlow {
 
     val launcherApps = context.getSystemService(LauncherApps::class.java)
     val callback = object : LauncherApps.Callback() {
-        override fun onPackageRemoved(packageName: String?, user: UserHandle?) { trySend(Unit) }
-        override fun onPackageAdded(packageName: String?, user: UserHandle?) { trySend(Unit) }
-        override fun onPackageChanged(packageName: String?, user: UserHandle?) { trySend(Unit) }
-        override fun onPackagesAvailable(packageNames: Array<out String>?, user: UserHandle?, replacing: Boolean) { trySend(Unit) }
-        override fun onPackagesUnavailable(packageNames: Array<out String>?, user: UserHandle?, replacing: Boolean) { trySend(Unit) }
+        override fun onPackageRemoved(packageName: String?, user: UserHandle?) { trySend(packageName) }
+        override fun onPackageAdded(packageName: String?, user: UserHandle?) { trySend(packageName) }
+        override fun onPackageChanged(packageName: String?, user: UserHandle?) { trySend(packageName) }
+        override fun onPackagesAvailable(packageNames: Array<out String>?, user: UserHandle?, replacing: Boolean) { trySend(null) }
+        override fun onPackagesUnavailable(packageNames: Array<out String>?, user: UserHandle?, replacing: Boolean) { trySend(null) }
     }
     launcherApps.registerCallback(callback, Handler(Looper.getMainLooper()))
     awaitClose {

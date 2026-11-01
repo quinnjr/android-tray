@@ -37,7 +37,6 @@ import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.withVisibleOrder
 import dev.quinnjr.android_drawer.ui.MainActivity
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -53,8 +52,10 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class EdgeService : LifecycleService() {
@@ -77,11 +78,14 @@ class EdgeService : LifecycleService() {
     private val displayConfig = MutableStateFlow<DisplayConfig?>(null)
     private var opening = false
     private var recentJob: Job? = null
-    /** Recent apps with icons already drawn, so reopening the drawer doesn't redraw them. */
-    private val recentIcons = ConcurrentHashMap<AppKey, LaunchableApp>()
-    /** Bumped whenever [recentIcons] is cleared, so a drawing started before can't be stored after. */
-    @Volatile private var iconGeneration = 0
+    /** Guards [recentIcons] and [iconGeneration]. */
     private val iconLock = Any()
+    /** Recent apps with icons already drawn, so reopening the drawer doesn't redraw them. */
+    private val recentIcons = HashMap<AppKey, LaunchableApp>()
+    /** Bumped whenever [recentIcons] is cleared, so a drawing started before can't be stored after. */
+    private var iconGeneration = 0
+    /** True while the background resolve is working on a newer set of pinned apps. */
+    private val resolving = MutableStateFlow(false)
     private var foreground = false
     /** Started through startForegroundService(), so startForeground() is mandatory. */
     private var foregroundRequired = false
@@ -153,11 +157,13 @@ class EdgeService : LifecycleService() {
                         clearRecentIcons()
                     }
                     .settled()
-                    .onStart { emit(Unit) },
+                    .onStart { emit(null) },
                 displayConfig,
             ) { keys, _, _ -> keys }
+                .onEach { resolving.value = true }
                 .mapLatest { keys -> keys to resolveWithIcons(keys.toList()) }
                 .collect { (keys, apps) ->
+                    resolving.value = false
                     if (apps == null) {
                         // Failed: keep what we had; with nothing yet, let the drawer resolve on open.
                         if (resolved.value == null) resolved.value = emptyMap()
@@ -194,6 +200,8 @@ class EdgeService : LifecycleService() {
                     onOpenSettings = {
                         startActivity(Intent(this@EdgeService, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     },
+                    // Nobody will see the recents of a closed drawer.
+                    onClosed = { recentJob?.cancel() },
                 )
             } finally {
                 opening = false
@@ -204,13 +212,16 @@ class EdgeService : LifecycleService() {
                 recent.value = withContext(Dispatchers.Default) {
                     val start = SystemClock.elapsedRealtime()
                     // Taken before anything is read, so icons read before a clear are never stored after it.
-                    val generation = iconGeneration
-                    runCatching {
-                        catalog.recent(keys, recents, cached = { recentIcons[it] }).map { withRecentIcon(it, generation) }
-                    }
-                        .onFailure { Log.w(TAG, "Could not read recent apps", it) }
-                        .getOrDefault(emptyList())
-                        .also { Log.d(TAG, "Recent apps read in ${SystemClock.elapsedRealtime() - start} ms") }
+                    val generation = synchronized(iconLock) { iconGeneration }
+                    try {
+                        catalog.recent(keys, recents, cached = ::cachedRecentIcon)
+                            .map { ensureActive(); withRecentIcon(it, generation) }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not read recent apps", e)
+                        emptyList()
+                    }.also { Log.d(TAG, "Recent apps read in ${SystemClock.elapsedRealtime() - start} ms") }
                 }
             }
         }
@@ -221,6 +232,9 @@ class EdgeService : LifecycleService() {
      * it hasn't resolved yet (e.g. just pinned) are resolved now.
      */
     private suspend fun pinnedApps(keys: List<AppKey>): List<LaunchableApp> {
+        // A background resolve of newly pinned apps is likely almost done: wait for it (briefly)
+        // rather than resolving the same apps a second time.
+        withTimeoutOrNull(RESOLVE_WAIT_MS) { resolving.first { !it } }
         val cache = resolved.filterNotNull().first()
         // Keys that couldn't be resolved (e.g. a paused work profile) are retried now and then,
         // in case the event that should have brought them back was missed or raced.
@@ -232,8 +246,9 @@ class EdgeService : LifecycleService() {
             unresolvable = unresolvable - fresh.keys
             unresolvableSince = SystemClock.elapsedRealtime()
         }
-        // Keep what was just resolved, so the next open doesn't resolve it again.
-        if (fresh.isNotEmpty()) resolved.value = cache + fresh
+        // Keep what was just resolved, so the next open doesn't resolve it again; anything the
+        // background resolve published meanwhile is newer and wins.
+        if (fresh.isNotEmpty()) resolved.update { current -> fresh + current.orEmpty() }
         return keys.mapNotNull { cache[it] ?: fresh[it] }
     }
 
@@ -269,6 +284,8 @@ class EdgeService : LifecycleService() {
         }
         return drawn
     }
+
+    private fun cachedRecentIcon(key: AppKey): LaunchableApp? = synchronized(iconLock) { recentIcons[key] }
 
     private fun clearRecentIcons() = synchronized(iconLock) {
         iconGeneration++
@@ -327,7 +344,9 @@ class EdgeService : LifecycleService() {
 
     /** Overlay windows get a dedicated window context on API 30+, as the platform recommends. */
     private fun createOverlayContext(): Context {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return this
+        // Android 11's window context doesn't get its own configuration callbacks (they go to the
+        // application, ahead of its resources updating), so there the service itself is used.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return this
         val display = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY) ?: return this
         return createDisplayContext(display)
             .createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null)
@@ -367,6 +386,7 @@ class EdgeService : LifecycleService() {
         private const val FOREGROUND_RETRY_MS = 500L
         private const val MAX_RECENT_ICONS = 32
         private const val UNRESOLVABLE_RETRY_MS = 30_000L
+        private const val RESOLVE_WAIT_MS = 1_000L
 
         private const val EXTRA_FOREGROUND_REQUIRED = "foreground_required"
 

@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -37,6 +38,17 @@ import kotlinx.coroutines.launch
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = SettingsRepository(app)
     private val catalog = AppCatalog(app)
+    /** Guards [icons] and [iconCacheSizePx]. */
+    private val iconLock = Any()
+    /** Apps with icons drawn at [iconCacheSizePx], kept across reloads of the list. */
+    private val icons = HashMap<AppKey, LaunchableApp>()
+    private var iconCacheSizePx = 0
+
+    /** Drops drawn icons for [pkg], or for every app when null (several apps or a profile changed). */
+    private fun forgetIcons(pkg: String?) = synchronized(iconLock) {
+        if (pkg == null) icons.clear() else icons.keys.removeAll { it.component.startsWith("$pkg/") }
+    }
+
     /** Follows the activity's density (it survives Display size changes; this ViewModel doesn't need to). */
     private val iconSizePx = MutableStateFlow(0)
 
@@ -45,16 +57,26 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** All launchable apps; null while loading. */
     val allApps: StateFlow<List<LaunchableApp>?> = combine(
-        // A burst of app updates reloads the list once.
-        appsChanged(app).settled().onStart { emit(Unit) },
+        // Changed apps lose their drawn icon at once; a burst of updates reloads the list once.
+        appsChanged(app)
+            .onEach { pkg -> forgetIcons(pkg) }
+            .settled()
+            .onStart { emit(null) },
         iconSizePx.filter { it > 0 },
     ) { _, px -> px }
-        // Icons drawn here, off the main thread, rather than while the list scrolls; a newer
-        // change cancels the drawing in progress.
+        // Icons drawn here, off the main thread, rather than while the list scrolls; only apps
+        // without a drawn icon are drawn, and a newer change cancels the drawing in progress.
         .mapLatest { px ->
+            val cache = synchronized(iconLock) {
+                if (iconCacheSizePx != px) {
+                    icons.clear()
+                    iconCacheSizePx = px
+                }
+                HashMap(icons)
+            }
             catalog.allApps().map { app ->
                 currentCoroutineContext().ensureActive()
-                app.withBitmap(px)
+                cache[app.key] ?: app.withBitmap(px).also { drawn -> synchronized(iconLock) { icons[app.key] = drawn } }
             }
         }
         .flowOn(Dispatchers.Default)

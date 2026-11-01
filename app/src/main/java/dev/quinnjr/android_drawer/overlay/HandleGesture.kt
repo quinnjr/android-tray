@@ -26,6 +26,13 @@ class HandleGesture(
 ) {
     private var active = false
     private var dragging = false
+
+    /** Whether the handle is currently picked up and following the finger. */
+    val isDragging get() = active && dragging
+
+    /** The edge a handle released at [x] snaps to, on a screen [screenWidth] wide. */
+    fun sideAt(x: Float, screenWidth: Int = this.screenWidth): Side =
+        if (x < screenWidth / 2f) Side.LEFT else Side.RIGHT
     private var movedPastSlop = false
     private var opened = false
     private var downX = 0f
@@ -82,7 +89,7 @@ class HandleGesture(
         val wasDragging = active && dragging
         cancel()
         if (!wasDragging) return GestureResult.None
-        return GestureResult.Drop(if (x < screenWidth / 2f) Side.LEFT else Side.RIGHT, y)
+        return GestureResult.Drop(sideAt(x), y)
     }
 
     fun cancel() {

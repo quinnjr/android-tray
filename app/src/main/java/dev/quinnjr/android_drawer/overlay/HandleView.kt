@@ -33,11 +33,12 @@ class HandleView(
     /** A reconfigured gesture waiting for the current touch to end. */
     private var pendingGesture: HandleGesture? = null
     private var touching = false
-    private var dragging = false
-    val isDragging get() = dragging
+
+    /** The gesture's own state, so there is a single source of truth. */
+    val isDragging get() = gesture?.isDragging == true
 
     private val longPress = Runnable {
-        if (gesture?.tick(SystemClock.uptimeMillis()) == true) startDrag()
+        if (gesture?.tick(SystemClock.uptimeMillis()) == true) pickedUp()
     }
 
     fun configure(side: Side, color: Long, alpha: Float, screenWidth: Int) {
@@ -88,29 +89,33 @@ class HandleView(
                 g.down(event.rawX, event.rawY, now)
                 postDelayed(longPress, g.longPressMs)
             }
-            MotionEvent.ACTION_MOVE -> when (val r = g.move(event.rawX, event.rawY, now)) {
-                GestureResult.Open -> {
-                    removeCallbacks(longPress)
-                    onOpen()
+            MotionEvent.ACTION_MOVE -> {
+                val wasDragging = g.isDragging
+                when (val r = g.move(event.rawX, event.rawY, now)) {
+                    GestureResult.Open -> {
+                        removeCallbacks(longPress)
+                        onOpen()
+                    }
+                    is GestureResult.Move -> {
+                        // Picked up by this move (the long-press came due before it).
+                        if (!wasDragging) pickedUp()
+                        onDragMove(r.rawX, r.rawY)
+                    }
+                    else -> Unit
                 }
-                is GestureResult.Move -> {
-                    if (!dragging) startDrag()
-                    onDragMove(r.rawX, r.rawY)
-                }
-                else -> Unit
             }
             MotionEvent.ACTION_UP -> {
                 removeCallbacks(longPress)
                 val r = g.up(event.rawX, event.rawY, now)
-                dragging = false
+                // If the screen changed mid-drag (rotation), judge the side on the new width.
+                val drop = (r as? GestureResult.Drop)?.let { pendingGesture?.sideAt(event.rawX) ?: it.side }
                 endTouch()
-                if (r is GestureResult.Drop) onDrop(r.side, r.rawY)
+                if (drop != null) onDrop(drop, event.rawY)
             }
             MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(longPress)
+                val wasDragging = g.isDragging
                 g.cancel()
-                val wasDragging = dragging
-                dragging = false
                 endTouch()
                 if (wasDragging) onDrop(side, event.rawY)
             }
@@ -124,8 +129,7 @@ class HandleView(
         pendingGesture = null
     }
 
-    private fun startDrag() {
-        dragging = true
+    private fun pickedUp() {
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
     }
 }
