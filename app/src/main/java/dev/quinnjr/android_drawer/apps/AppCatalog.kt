@@ -29,6 +29,10 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onStart
 
 data class LaunchableApp(
     val key: AppKey,
@@ -193,9 +197,28 @@ class AppCatalog(context: Context) {
 /** How long app changes must settle before a burst of them (e.g. many updates) is acted on once. */
 private const val APPS_CHANGED_DEBOUNCE_MS = 500L
 
-/** [appsChanged] events, with a burst collapsed into one once it settles. */
+/** Events with a burst collapsed into one once it settles. */
 @OptIn(FlowPreview::class)
 fun <T> Flow<T>.settled(): Flow<T> = debounce(APPS_CHANGED_DEBOUNCE_MS)
+
+/**
+ * App changes worth reloading for. [onChange] sees every change at once (to drop caches), then a
+ * burst of [relevant] ones (e.g. many updates) gives a single emission once it settles. Starts
+ * with one emission, for the initial load.
+ */
+fun appChanges(
+    context: Context,
+    relevant: (pkg: String?) -> Boolean = { true },
+    onChange: (pkg: String?) -> Unit = {},
+): Flow<Unit> = appsChanged(context)
+    .onEach(onChange)
+    .filter(relevant)
+    .settled()
+    .map { }
+    .onStart { emit(Unit) }
+
+/** Whether [key] belongs to [pkg]. */
+fun AppKey.isIn(pkg: String): Boolean = component.startsWith("$pkg/")
 
 /**
  * Emits whenever an app is installed, removed or changed in any profile (its package name), or

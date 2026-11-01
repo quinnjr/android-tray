@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Build
+import android.util.DisplayMetrics
 import android.util.Log
 import android.util.Size
 import android.view.Gravity
@@ -45,6 +46,8 @@ class OverlayHost(
     private var drawerOwner: OverlayLifecycleOwner? = null
     private var drawerState: MutableTransitionState<Boolean>? = null
     private var drawerClosed: (() -> Unit)? = null
+    /** Screen size and navigation-bar insets for the drag in progress. */
+    private var dragBounds: Pair<Size, Rect>? = null
     private var fullscreen = false
     private val watcher = FullscreenWatcher(context, ::add, ::remove, ::setFullscreen)
     private var watching = false
@@ -76,6 +79,7 @@ class OverlayHost(
 
     /** Re-applies the stored position, e.g. after rotation. */
     fun relayout() {
+        dragBounds = null
         settings?.let(::showHandle)
     }
 
@@ -158,7 +162,10 @@ class OverlayHost(
         val b = wm.currentWindowMetrics.bounds
         Size(b.width(), b.height())
     } else {
-        val dm = context.resources.displayMetrics
+        // displayMetrics leaves out the navigation bar; the overlay is laid out on the real screen.
+        val dm = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        wm.defaultDisplay.getRealMetrics(dm)
         Size(dm.widthPixels, dm.heightPixels)
     }
 
@@ -166,7 +173,10 @@ class OverlayHost(
         val i = wm.currentWindowMetrics.windowInsets.getInsets(WindowInsets.Type.navigationBars())
         Rect(i.left, i.top, i.right, i.bottom)
     } else {
-        Rect()
+        // Before Android 11, the system bars' size comes from an attached overlay's insets.
+        @Suppress("DEPRECATION")
+        (handle?.rootWindowInsets)?.let { Rect(it.stableInsetLeft, it.stableInsetTop, it.stableInsetRight, it.stableInsetBottom) }
+            ?: Rect()
     }
 
     private fun removeDrawer() {
@@ -207,14 +217,15 @@ class OverlayHost(
 
     private fun dragHandleTo(rawX: Float, rawY: Float) {
         val view = handle ?: return
-        val screen = screenSize()
-        val nav = navBarInsets()
+        // Measured once per drag: this runs for every touch move.
+        val (screen, nav) = dragBounds ?: (screenSize() to navBarInsets()).also { dragBounds = it }
         handleParams.x = handleDragX(rawX, screen.width, handleWidthPx, nav.left, nav.right)
         handleParams.y = handleTopAt(rawY, screen.height, handleHeightPx)
         update(view, handleParams)
     }
 
     private fun dropHandle(side: Side, rawY: Float) {
+        dragBounds = null
         val s = settings ?: return
         val screen = screenSize()
         val top = handleTopAt(rawY, screen.height, handleHeightPx)

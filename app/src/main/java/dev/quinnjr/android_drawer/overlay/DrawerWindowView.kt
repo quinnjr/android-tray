@@ -8,10 +8,20 @@ import android.widget.FrameLayout
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 
-/** Root of the drawer window: routes the system back gesture/button to [onBack]. */
+/**
+ * Root of the drawer window: routes the system back gesture/button to [onBack], and calls it too
+ * when the window loses focus after having had it (Home, Recents, another app coming up), since
+ * those never reach an overlay window as key events.
+ */
 @SuppressLint("ViewConstructor")
 class DrawerWindowView(context: Context, private val onBack: () -> Unit) : FrameLayout(context) {
     private var backCallback: Any? = null
+    private var hadFocus = false
+
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        if (hasWindowFocus) hadFocus = true else if (hadFocus) onBack()
+    }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()

@@ -33,6 +33,8 @@ class HandleView(
     /** A reconfigured gesture waiting for the current touch to end. */
     private var pendingGesture: HandleGesture? = null
     private var touching = false
+    /** Where the finger last was; ACTION_CANCEL's own coordinates aren't reliable. */
+    private var lastRawX = 0f
 
     /** The gesture's own state, so there is a single source of truth. */
     val isDragging get() = gesture?.isDragging == true
@@ -86,10 +88,12 @@ class HandleView(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 touching = true
+                lastRawX = event.rawX
                 g.down(event.rawX, event.rawY, now)
                 postDelayed(longPress, g.longPressMs)
             }
             MotionEvent.ACTION_MOVE -> {
+                lastRawX = event.rawX
                 val wasDragging = g.isDragging
                 when (val r = g.move(event.rawX, event.rawY, now)) {
                     GestureResult.Open -> {
@@ -115,9 +119,11 @@ class HandleView(
             MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(longPress)
                 val wasDragging = g.isDragging
+                // Drop where the finger was (on the current screen width), like a normal release.
+                val dropSide = (pendingGesture ?: g).sideAt(lastRawX)
                 g.cancel()
                 endTouch()
-                if (wasDragging) onDrop(side, event.rawY)
+                if (wasDragging) onDrop(dropSide, event.rawY)
             }
         }
         return true

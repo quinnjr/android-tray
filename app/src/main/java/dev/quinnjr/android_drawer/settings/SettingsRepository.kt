@@ -2,24 +2,36 @@ package dev.quinnjr.android_drawer.settings
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import java.io.IOException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
-private val Context.dataStore: DataStore<Preferences> by preferencesDataStore("drawer_settings")
+// A corrupt file (e.g. power lost mid-write) is replaced with defaults rather than crashing.
+private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
+    "drawer_settings",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+)
 
 class SettingsRepository(context: Context) {
     private val store = context.applicationContext.dataStore
 
-    val settings: Flow<DrawerSettings> = store.data.map { it.toSettings() }.distinctUntilChanged()
+    /** Falls back to defaults if the file can't be read, rather than failing every collector. */
+    val settings: Flow<DrawerSettings> = store.data
+        .catch { e -> if (e is IOException) emit(emptyPreferences()) else throw e }
+        .map { it.toSettings() }
+        .distinctUntilChanged()
 
     suspend fun update(transform: (DrawerSettings) -> DrawerSettings) {
         store.edit { prefs ->

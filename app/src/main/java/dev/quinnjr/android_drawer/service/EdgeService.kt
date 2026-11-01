@@ -5,9 +5,11 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.ComponentCallbacks
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.hardware.display.DisplayManager
@@ -21,15 +23,17 @@ import android.util.Log
 import android.view.Display
 import android.view.WindowManager
 import androidx.compose.runtime.mutableStateOf
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import dev.quinnjr.android_drawer.R
 import dev.quinnjr.android_drawer.TAG
 import dev.quinnjr.android_drawer.apps.AppCatalog
+import dev.quinnjr.android_drawer.apps.IconCache
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.RecentApps
-import dev.quinnjr.android_drawer.apps.appsChanged
-import dev.quinnjr.android_drawer.apps.settled
+import dev.quinnjr.android_drawer.apps.appChanges
+import dev.quinnjr.android_drawer.apps.isIn
 import dev.quinnjr.android_drawer.apps.withBitmap
 import dev.quinnjr.android_drawer.overlay.DRAWER_ICON_SIZE
 import dev.quinnjr.android_drawer.overlay.OverlayHost
@@ -51,7 +55,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onEach
-import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -78,12 +81,10 @@ class EdgeService : LifecycleService() {
     private val displayConfig = MutableStateFlow<DisplayConfig?>(null)
     private var opening = false
     private var recentJob: Job? = null
-    /** Guards [recentIcons] and [iconGeneration]. */
-    private val iconLock = Any()
     /** Recent apps with icons already drawn, so reopening the drawer doesn't redraw them. */
-    private val recentIcons = HashMap<AppKey, LaunchableApp>()
-    /** Bumped whenever [recentIcons] is cleared, so a drawing started before can't be stored after. */
-    private var iconGeneration = 0
+    private val recentIcons = IconCache<AppKey, LaunchableApp>(MAX_RECENT_ICONS)
+    /** Packages of pinned apps: changes to other apps don't need the pinned apps re-resolved. */
+    @Volatile private var pinnedPackages: Set<String> = emptySet()
     /** True while the background resolve is working on a newer set of pinned apps. */
     private val resolving = MutableStateFlow(false)
     private var foreground = false
@@ -95,6 +96,18 @@ class EdgeService : LifecycleService() {
     private val overlayPermissionListener = AppOpsManager.OnOpChangedListener { _, pkg ->
         // Revoking "Display over other apps" doesn't kill us; the windows just vanish.
         if (pkg == packageName) mainHandler.post { if (!Settings.canDrawOverlays(this)) stopSelf() }
+    }
+
+    /**
+     * Closes an open drawer on screen-off (it shouldn't greet the user on unlock) and on Home or
+     * Recents, which never reach an overlay window as keys and, when the launcher is already in
+     * front, don't take the drawer's focus either; the system still announces them this way.
+     */
+    private val closeDrawerReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            Log.d(TAG, "Closing drawer: ${intent.action} ${intent.getStringExtra(EXTRA_CLOSE_REASON).orEmpty()}")
+            host.closeDrawer()
+        }
     }
 
     private val configCallbacks = object : ComponentCallbacks {
@@ -124,8 +137,12 @@ class EdgeService : LifecycleService() {
         if (overlayContext !== this) overlayContext.registerComponentCallbacks(configCallbacks)
         displayConfig.value = DisplayConfig.of(overlayContext.resources.configuration)
         appOps.startWatchingMode(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, packageName, overlayPermissionListener)
+        @Suppress("DEPRECATION") // Still delivered for Home/Recents; only sending it is restricted.
+        val closeActions = IntentFilter(Intent.ACTION_SCREEN_OFF).apply { addAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS) }
+        ContextCompat.registerReceiver(this, closeDrawerReceiver, closeActions, ContextCompat.RECEIVER_NOT_EXPORTED)
         lifecycleScope.launch {
             repo.settings.collect { s ->
+                pinnedPackages = s.apps.mapTo(HashSet()) { it.component.substringBefore('/') }
                 if (!s.enabled || !Settings.canDrawOverlays(this@EdgeService)) {
                     stopSelf()
                 } else {
@@ -149,15 +166,16 @@ class EdgeService : LifecycleService() {
         lifecycleScope.launch {
             combine(
                 repo.settings.map { it.apps.toSet() }.distinctUntilChanged(),
-                // Installed, removed or changed apps also invalidate the cached entries and icons.
-                // A burst of updates (e.g. the Play Store updating many apps) resolves once.
-                appsChanged(this@EdgeService)
-                    .onEach {
+                // Any app change invalidates the cached launcher entries and that app's recent icon;
+                // only changes to pinned apps (or to many/all at once) re-resolve the pinned apps.
+                appChanges(
+                    this@EdgeService,
+                    relevant = { pkg -> pkg == null || pkg in pinnedPackages },
+                    onChange = { pkg ->
                         catalog.invalidate()
-                        clearRecentIcons()
-                    }
-                    .settled()
-                    .onStart { emit(null) },
+                        if (pkg == null) recentIcons.clear() else recentIcons.forget { it.isIn(pkg) }
+                    },
+                ),
                 displayConfig,
             ) { keys, _, _ -> keys }
                 .onEach { resolving.value = true }
@@ -212,9 +230,9 @@ class EdgeService : LifecycleService() {
                 recent.value = withContext(Dispatchers.Default) {
                     val start = SystemClock.elapsedRealtime()
                     // Taken before anything is read, so icons read before a clear are never stored after it.
-                    val generation = synchronized(iconLock) { iconGeneration }
+                    val generation = recentIcons.generation()
                     try {
-                        catalog.recent(keys, recents, cached = ::cachedRecentIcon)
+                        catalog.recent(keys, recents, cached = { recentIcons[it] })
                             .map { ensureActive(); withRecentIcon(it, generation) }
                     } catch (e: CancellationException) {
                         throw e
@@ -269,27 +287,10 @@ class EdgeService : LifecycleService() {
         }
     }
 
-    /**
-     * [app] with its icon drawn, kept for later opens unless the cache was cleared since
-     * [generation] was taken (its data may be stale).
-     */
+    /** [app] with its icon drawn, kept for later opens unless the cache was invalidated since [generation]. */
     private fun withRecentIcon(app: LaunchableApp, generation: Int): LaunchableApp {
         if (app.bitmap != null) return app
-        val drawn = app.withBitmap(iconSizePx())
-        synchronized(iconLock) {
-            if (generation == iconGeneration) {
-                if (recentIcons.size >= MAX_RECENT_ICONS) recentIcons.clear()
-                recentIcons[app.key] = drawn
-            }
-        }
-        return drawn
-    }
-
-    private fun cachedRecentIcon(key: AppKey): LaunchableApp? = synchronized(iconLock) { recentIcons[key] }
-
-    private fun clearRecentIcons() = synchronized(iconLock) {
-        iconGeneration++
-        recentIcons.clear()
+        return app.withBitmap(iconSizePx()).also { recentIcons.put(app.key, it, generation) }
     }
 
     /**
@@ -300,7 +301,7 @@ class EdgeService : LifecycleService() {
         host.relayout()
         val config = DisplayConfig.of(newConfig)
         if (config != displayConfig.value) {
-            clearRecentIcons()
+            recentIcons.clear()
             displayConfig.value = config
         }
     }
@@ -337,6 +338,7 @@ class EdgeService : LifecycleService() {
     override fun onDestroy() {
         mainHandler.removeCallbacksAndMessages(null)
         appOps.stopWatchingMode(overlayPermissionListener)
+        unregisterReceiver(closeDrawerReceiver)
         if (overlayContext !== this) overlayContext.unregisterComponentCallbacks(configCallbacks)
         host.removeAll()
         super.onDestroy()
@@ -387,6 +389,7 @@ class EdgeService : LifecycleService() {
         private const val MAX_RECENT_ICONS = 32
         private const val UNRESOLVABLE_RETRY_MS = 30_000L
         private const val RESOLVE_WAIT_MS = 1_000L
+        private const val EXTRA_CLOSE_REASON = "reason"
 
         private const val EXTRA_FOREGROUND_REQUIRED = "foreground_required"
 
