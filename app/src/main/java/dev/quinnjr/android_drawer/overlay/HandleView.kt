@@ -30,6 +30,9 @@ class HandleView(
     private val pill = RectF()
     private var side = Side.RIGHT
     private var gesture: HandleGesture? = null
+    /** A reconfigured gesture waiting for the current touch to end. */
+    private var pendingGesture: HandleGesture? = null
+    private var touching = false
     private var dragging = false
 
     private val longPress = Runnable {
@@ -45,11 +48,14 @@ class HandleView(
         val longPressMs = ViewConfiguration.getLongPressTimeout().toLong()
         val current = gesture
         // Settings writes (colour, a just-dropped position) re-run this; keep a swipe in progress.
-        if (current == null || current.side != side || current.touchSlopPx != touchSlop ||
-            current.openDistancePx != openDistance || current.longPressMs != longPressMs ||
-            current.screenWidth != screenWidth
+        val latest = pendingGesture ?: current
+        if (latest == null || latest.side != side || latest.touchSlopPx != touchSlop ||
+            latest.openDistancePx != openDistance || latest.longPressMs != longPressMs ||
+            latest.screenWidth != screenWidth
         ) {
-            gesture = HandleGesture(side, touchSlop, openDistance, longPressMs, screenWidth)
+            val next = HandleGesture(side, touchSlop, openDistance, longPressMs, screenWidth)
+            // Mid-gesture (e.g. rotating while dragging the handle), swap it in once the finger lifts.
+            if (touching) pendingGesture = next else gesture = next
         }
         invalidate()
     }
@@ -77,6 +83,7 @@ class HandleView(
         val now = event.eventTime
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                touching = true
                 g.down(event.rawX, event.rawY, now)
                 postDelayed(longPress, g.longPressMs)
             }
@@ -95,16 +102,25 @@ class HandleView(
                 removeCallbacks(longPress)
                 val r = g.up(event.rawX, event.rawY, now)
                 dragging = false
+                endTouch()
                 if (r is GestureResult.Drop) onDrop(r.side, r.rawY)
             }
             MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(longPress)
                 g.cancel()
-                if (dragging) onDrop(side, event.rawY)
+                val wasDragging = dragging
                 dragging = false
+                endTouch()
+                if (wasDragging) onDrop(side, event.rawY)
             }
         }
         return true
+    }
+
+    private fun endTouch() {
+        touching = false
+        pendingGesture?.let { gesture = it }
+        pendingGesture = null
     }
 
     private fun startDrag() {

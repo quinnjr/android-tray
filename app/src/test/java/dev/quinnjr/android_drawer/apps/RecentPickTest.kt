@@ -16,8 +16,8 @@ class RecentPickTest {
             for ((pkg, time) in stillOpen) resumed(pkg, time)
         }
 
-    private fun UsageHistory.pick(excluded: Set<String> = emptySet(), launchable: Set<String> = all, limit: Int = 4) =
-        pick(excluded, launchable, limit)
+    private fun UsageHistory.pick(excluded: Set<String> = emptySet(), launchable: Set<String> = all) =
+        pick(excluded, launchable)
 
     @Test
     fun `most recent first, using each app's latest use`() {
@@ -53,7 +53,7 @@ class RecentPickTest {
     fun `app left resumed by a shutdown is not stuck as on screen`() {
         val h = UsageHistory().apply {
             resumed("a", 1L)
-            shutdown()
+            reset()
             resumed("b", 2L); paused("b")
         }
         assertEquals(listOf("b", "a"), h.pick())
@@ -73,10 +73,13 @@ class RecentPickTest {
 
     @Test
     fun `stopped counts as no longer on screen`() {
-        val h = UsageHistory().apply {
-            resumed("a", 1L); stopped("a")
-            resumed("now", 2L)
-        }
+        val h = UsageHistory().replay(
+            listOf(
+                UsageEvent(UsageEvent.Kind.RESUMED, "a", "a.Main", 1L),
+                UsageEvent(UsageEvent.Kind.LEFT, "a", "a.Main", 2L),
+                UsageEvent(UsageEvent.Kind.RESUMED, "now", "now.Main", 3L),
+            ),
+        )
         assertEquals(listOf("a"), h.pick())
     }
 
@@ -86,7 +89,7 @@ class RecentPickTest {
         val h = UsageHistory().apply {
             resumed("a", 1L, "a.Old"); paused("a", "a.Old")
             resumed("now", 2L, "now.Main"); paused("now", "now.Main")
-            resumed("now", 3L, "now.Sub"); stopped("now", "now.Main")
+            resumed("now", 3L, "now.Sub"); paused("now", "now.Main")
         }
         assertEquals(listOf("a"), h.pick())
     }
@@ -111,12 +114,6 @@ class RecentPickTest {
     fun `apps without a launcher entry are skipped`() {
         val h = history("a" to 1L, "systemui" to 2L)
         assertEquals(listOf("a"), h.pick())
-    }
-
-    @Test
-    fun `at most limit apps`() {
-        val h = history("a" to 1L, "b" to 2L, "c" to 3L, "d" to 4L, "e" to 5L, "f" to 6L)
-        assertEquals(listOf("f", "e", "d", "c"), h.pick())
     }
 
     @Test
@@ -147,24 +144,30 @@ class RecentPickTest {
     }
 
     @Test
-    fun `an app left resumed long before the current one is not its split-screen partner`() {
-        // "x" crashed (no pause) an hour before "now" was opened full screen.
+    fun `a long-running split screen keeps both halves on screen`() {
         val hour = 60L * 60 * 1000
         val h = UsageHistory().apply {
-            resumed("x", 0L)
-            resumed("now", hour)
+            resumed("a", 0L); paused("a")
+            resumed("split", 1L)
+            resumed("b", hour); paused("b")
+            resumed("now", 2 * hour)
         }
-        assertEquals(listOf("x"), h.pick(launchable = all + "x"))
+        assertEquals(listOf("b", "a"), h.pick())
     }
 
     @Test
-    fun `an app resumed shortly before the current one counts as its split-screen partner`() {
-        val h = UsageHistory().apply {
-            resumed("a", 0L); paused("a")
-            resumed("split", 60_000L)
-            resumed("now", 120_000L)
-        }
-        assertEquals(listOf("a"), h.pick())
+    fun `screen off clears an app left resumed by a crash`() {
+        // "x" crashed without a pause; on screen-off everything shown pauses, and whatever is
+        // really on screen resumes again on unlock.
+        val h = UsageHistory().replay(
+            listOf(
+                UsageEvent(UsageEvent.Kind.RESUMED, "x", "x.Main", 1L),
+                UsageEvent(UsageEvent.Kind.RESUMED, "now", "now.Main", 2L),
+                UsageEvent(UsageEvent.Kind.RESET, "android", null, 3L),
+                UsageEvent(UsageEvent.Kind.RESUMED, "now", "now.Main", 4L),
+            ),
+        )
+        assertEquals(listOf("x"), h.pick(launchable = all + "x"))
     }
 
     @Test

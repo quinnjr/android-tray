@@ -30,6 +30,14 @@ class HandleGestureTest {
     }
 
     @Test
+    fun `a swipe whose first move arrives after the long-press time still opens`() {
+        // The finger rested briefly, then swiped; the long-press timer hadn't run yet.
+        val g = gesture(Side.RIGHT)
+        g.down(1070f, 500f, 0L)
+        assertEquals(GestureResult.Open, g.move(1000f, 505f, 450L))
+    }
+
+    @Test
     fun `open fires only once per gesture`() {
         val g = gesture(Side.RIGHT)
         g.down(1070f, 500f, 0L)

@@ -24,7 +24,9 @@ class RecentApps(private val context: Context) {
      * they're stamped, so the last [SETTLE_MS] are re-read on every call and only older events are
      * kept between calls; the kept part is rebuilt from scratch once a day so it stays bounded.
      */
-    internal fun <T> withHistory(now: Long = System.currentTimeMillis(), block: (UsageHistory) -> T): T = synchronized(lock) {
+    internal fun <T> withHistory(block: (UsageHistory) -> T): T = synchronized(lock) {
+        // Read the clock under the lock, so a call that waited for it never goes back in time.
+        val now = System.currentTimeMillis()
         val settleAt = now - SETTLE_MS
         var h = settled
         if (h == null || now - builtAt > REBUILD_MS || settleAt < settledUntil) {
@@ -57,7 +59,12 @@ class RecentApps(private val context: Context) {
             val kind = when (event.eventType) {
                 UsageEvents.Event.ACTIVITY_RESUMED -> UsageEvent.Kind.RESUMED
                 UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED -> UsageEvent.Kind.LEFT
-                UsageEvents.Event.DEVICE_SHUTDOWN, UsageEvents.Event.DEVICE_STARTUP -> UsageEvent.Kind.RESET
+                // Everything on screen pauses then, and resumes again (with a new event) after.
+                UsageEvents.Event.DEVICE_SHUTDOWN,
+                UsageEvents.Event.DEVICE_STARTUP,
+                UsageEvents.Event.SCREEN_NON_INTERACTIVE,
+                UsageEvents.Event.KEYGUARD_SHOWN,
+                -> UsageEvent.Kind.RESET
                 else -> continue
             }
             out += UsageEvent(kind, event.packageName, event.className, event.timeStamp)
@@ -115,10 +122,11 @@ internal class UsageHistory {
         resumed.remove(pkg to className.orEmpty())
     }
 
-    fun stopped(pkg: String, className: String? = null) = paused(pkg, className)
-
-    /** Nothing survives a shutdown or startup on screen, even without its pause being recorded. */
-    fun shutdown() = resumed.clear()
+    /**
+     * Nothing stays on screen across a shutdown, startup, screen-off or lock, even an app whose
+     * pause was never recorded (e.g. it crashed); what is really shown resumes again afterwards.
+     */
+    fun reset() = resumed.clear()
 
     /** Applies [events], which must be oldest first. */
     fun replay(events: List<UsageEvent>) = apply {
@@ -126,7 +134,7 @@ internal class UsageHistory {
             when (e.kind) {
                 UsageEvent.Kind.RESUMED -> resumed(e.pkg, e.time, e.className)
                 UsageEvent.Kind.LEFT -> paused(e.pkg, e.className)
-                UsageEvent.Kind.RESET -> shutdown()
+                UsageEvent.Kind.RESET -> reset()
             }
         }
     }
@@ -142,30 +150,26 @@ internal class UsageHistory {
     }
 
     /**
-     * The newest resumed app, plus a split-screen partner: another app still resumed that was
-     * resumed shortly before it. An app left resumed long before just never had its pause
-     * recorded (e.g. it crashed), so it isn't counted.
+     * The (at most two, for split screen) most recently resumed apps still resumed. Older ones
+     * still marked resumed just never had a pause recorded; a [reset] clears those.
      */
-    private fun onScreen(): Set<String> {
-        val byPackage = HashMap<String, Long>()
-        for ((key, time) in resumed) if (time > (byPackage[key.first] ?: Long.MIN_VALUE)) byPackage[key.first] = time
-        val newest = byPackage.entries.sortedByDescending { it.value }
-        val top = newest.firstOrNull() ?: return emptySet()
-        val partner = newest.getOrNull(1)?.takeIf { top.value - it.value <= SPLIT_SCREEN_WINDOW_MS }
-        return setOfNotNull(top.key, partner?.key)
-    }
+    private fun onScreen(): Set<String> = resumed.entries
+        .sortedByDescending { it.value }
+        .map { it.key.first }
+        .distinct()
+        .take(MAX_ON_SCREEN)
+        .toSet()
 
     /** Packages newest first, skipping on-screen, [excluded] and non-[launchable] ones. */
-    fun pick(excluded: Set<String>, launchable: Set<String>, limit: Int = Int.MAX_VALUE): List<String> {
+    fun pick(excluded: Set<String>, launchable: Set<String>): List<String> {
         val onScreen = onScreen()
         return lastUsed.entries
             .filter { (pkg, _) -> pkg !in onScreen && pkg !in excluded && pkg in launchable }
             .sortedByDescending { it.value }
-            .take(limit)
             .map { it.key }
     }
 
     private companion object {
-        const val SPLIT_SCREEN_WINDOW_MS = 10L * 60 * 1000
+        const val MAX_ON_SCREEN = 2
     }
 }

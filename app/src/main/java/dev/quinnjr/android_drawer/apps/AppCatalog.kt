@@ -43,8 +43,10 @@ fun Drawable.toImageBitmap(sizePx: Int): ImageBitmap = toBitmap(sizePx, sizePx).
  * Pre-renders each app's icon at [sizePx] and drops the drawable, which the long-running service
  * would otherwise keep alongside it. Call off the main thread.
  */
-fun List<LaunchableApp>.withBitmaps(sizePx: Int): List<LaunchableApp> =
-    map { app -> app.copy(bitmap = app.icon?.toImageBitmap(sizePx), icon = null) }
+fun List<LaunchableApp>.withBitmaps(sizePx: Int): List<LaunchableApp> = map { it.withBitmap(sizePx) }
+
+/** This app with its icon pre-rendered at [sizePx] and the drawable dropped. */
+fun LaunchableApp.withBitmap(sizePx: Int): LaunchableApp = copy(bitmap = icon?.toImageBitmap(sizePx), icon = null)
 
 class AppCatalog(context: Context) {
     private val packageName = context.packageName
@@ -59,9 +61,26 @@ class AppCatalog(context: Context) {
         .map { (key, info) -> info.toApp(key) }
         .sortedBy { it.label.lowercase() }
 
-    /** The apps for [keys], in order; icons are loaded only for these. */
-    fun resolve(keys: List<AppKey>): List<LaunchableApp> =
-        resolveInOrder(keys, activities().associateBy { it.first }).map { (key, info) -> info.toApp(key) }
+    /**
+     * The apps for [keys], in order; apps in a locked or paused profile are left out. Only the
+     * pinned packages are listed (not every installed app), and icons load only for these.
+     */
+    fun resolve(keys: List<AppKey>): List<LaunchableApp> {
+        val found = HashMap<AppKey, Pair<AppKey, LauncherActivityInfo>>()
+        for ((where, group) in keys.groupBy { it.userSerial to it.component.substringBefore('/') }) {
+            val (serial, pkg) = where
+            val user = userManager.getUserForSerialNumber(serial) ?: continue
+            if (!userManager.isUserUnlocked(user) || userManager.isQuietModeEnabled(user)) continue
+            runCatching { launcherApps.getActivityList(pkg, user) }
+                .onFailure { Log.w(TAG, "Could not list $pkg for $user", it) }
+                .getOrDefault(emptyList())
+                .forEach { info ->
+                    val key = AppKey(info.componentName.flattenToString(), serial)
+                    if (key in group) found[key] = key to info
+                }
+        }
+        return resolveInOrder(keys, found).map { (key, info) -> info.toApp(key) }
+    }
 
     /**
      * Up to [limit] recently used personal-profile apps, newest first, leaving out [pinned] apps,

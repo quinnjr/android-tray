@@ -7,7 +7,7 @@ import androidx.lifecycle.viewModelScope
 import dev.quinnjr.android_drawer.apps.AppCatalog
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.appsChanged
-import dev.quinnjr.android_drawer.apps.withBitmaps
+import dev.quinnjr.android_drawer.apps.withBitmap
 import dev.quinnjr.android_drawer.overlay.clampHandleHeightDp
 import dev.quinnjr.android_drawer.service.EdgeService
 import dev.quinnjr.android_drawer.settings.AppKey
@@ -16,18 +16,25 @@ import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.movedAmongShown
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = SettingsRepository(app)
     private val catalog = AppCatalog(app)
@@ -39,11 +46,18 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** All launchable apps; null while loading. */
     val allApps: StateFlow<List<LaunchableApp>?> = combine(
-        appsChanged(app).onStart { emit(Unit) },
+        // A burst of app updates reloads the list once.
+        appsChanged(app).debounce(APPS_CHANGED_DEBOUNCE_MS).onStart { emit(Unit) },
         iconSizePx.filter { it > 0 },
     ) { _, px -> px }
-        // Icons drawn here, off the main thread, rather than while the list scrolls.
-        .map { px -> catalog.allApps().withBitmaps(px) }
+        // Icons drawn here, off the main thread, rather than while the list scrolls; a newer
+        // change cancels the drawing in progress.
+        .mapLatest { px ->
+            catalog.allApps().map { app ->
+                currentCoroutineContext().ensureActive()
+                app.withBitmap(px)
+            }
+        }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
@@ -82,3 +96,5 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 }
 
 internal fun List<AppKey>.toggled(key: AppKey): List<AppKey> = if (key in this) this - key else this + key
+
+private const val APPS_CHANGED_DEBOUNCE_MS = 500L

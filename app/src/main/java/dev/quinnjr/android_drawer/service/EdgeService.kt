@@ -27,7 +27,7 @@ import dev.quinnjr.android_drawer.apps.AppCatalog
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.RecentApps
 import dev.quinnjr.android_drawer.apps.appsChanged
-import dev.quinnjr.android_drawer.apps.withBitmaps
+import dev.quinnjr.android_drawer.apps.withBitmap
 import dev.quinnjr.android_drawer.overlay.DRAWER_ICON_SIZE
 import dev.quinnjr.android_drawer.overlay.OverlayHost
 import dev.quinnjr.android_drawer.settings.AppKey
@@ -39,9 +39,12 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -52,7 +55,7 @@ import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-@OptIn(ExperimentalCoroutinesApi::class)
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class EdgeService : LifecycleService() {
     private lateinit var repo: SettingsRepository
     private lateinit var host: OverlayHost
@@ -68,6 +71,7 @@ class EdgeService : LifecycleService() {
     private val resolved = MutableStateFlow<Map<AppKey, LaunchableApp>?>(null)
     /** Pinned keys the last resolve couldn't find (e.g. a paused work profile's apps). */
     private var unresolvable: Set<AppKey> = emptySet()
+    private var unresolvableSince = 0L
     /** What app labels and icons depend on; they're reloaded when it changes. */
     private val displayConfig = MutableStateFlow<DisplayConfig?>(null)
     private var opening = false
@@ -76,6 +80,7 @@ class EdgeService : LifecycleService() {
     private val recentIcons = ConcurrentHashMap<AppKey, LaunchableApp>()
     /** Bumped whenever [recentIcons] is cleared, so a drawing started before can't be stored after. */
     @Volatile private var iconGeneration = 0
+    private val iconLock = Any()
     private var foreground = false
     private var retryScheduled = false
 
@@ -135,11 +140,13 @@ class EdgeService : LifecycleService() {
             combine(
                 repo.settings.map { it.apps.toSet() }.distinctUntilChanged(),
                 // Installed, removed or changed apps also invalidate the cached entries and icons.
+                // A burst of updates (e.g. the Play Store updating many apps) resolves once.
                 appsChanged(this@EdgeService)
                     .onEach {
                         catalog.invalidate()
                         clearRecentIcons()
                     }
+                    .debounce(APPS_CHANGED_DEBOUNCE_MS)
                     .onStart { emit(Unit) },
                 displayConfig,
             ) { keys, _, _ -> keys }
@@ -152,6 +159,7 @@ class EdgeService : LifecycleService() {
                     }
                     val byKey = apps.associateBy { it.key }
                     unresolvable = keys - byKey.keys
+                    unresolvableSince = SystemClock.elapsedRealtime()
                     resolved.value = byKey
                 }
         }
@@ -189,7 +197,11 @@ class EdgeService : LifecycleService() {
             recentJob = lifecycleScope.launch {
                 recent.value = withContext(Dispatchers.Default) {
                     val start = SystemClock.elapsedRealtime()
-                    runCatching { catalog.recent(keys, recents, cached = { recentIcons[it] }).map(::withRecentIcon) }
+                    // Taken before anything is read, so icons read before a clear are never stored after it.
+                    val generation = iconGeneration
+                    runCatching {
+                        catalog.recent(keys, recents, cached = { recentIcons[it] }).map { withRecentIcon(it, generation) }
+                    }
                         .onFailure { Log.w(TAG, "Could not read recent apps", it) }
                         .getOrDefault(emptyList())
                         .also { Log.d(TAG, "Recent apps read in ${SystemClock.elapsedRealtime() - start} ms") }
@@ -204,8 +216,16 @@ class EdgeService : LifecycleService() {
      */
     private suspend fun pinnedApps(keys: List<AppKey>): List<LaunchableApp> {
         val cache = resolved.filterNotNull().first()
-        val missing = keys.filter { it !in cache && it !in unresolvable }
-        val fresh = if (missing.isEmpty()) emptyMap() else resolveWithIcons(missing).orEmpty().associateBy { it.key }
+        // Keys that couldn't be resolved (e.g. a paused work profile) are retried now and then,
+        // in case the event that should have brought them back was missed or raced.
+        val retry = SystemClock.elapsedRealtime() - unresolvableSince > UNRESOLVABLE_RETRY_MS
+        val missing = keys.filter { it !in cache && (retry || it !in unresolvable) }
+        if (missing.isEmpty()) return keys.mapNotNull { cache[it] }
+        val fresh = resolveWithIcons(missing).orEmpty().associateBy { it.key }
+        if (retry) {
+            unresolvable = unresolvable - fresh.keys
+            unresolvableSince = SystemClock.elapsedRealtime()
+        }
         return keys.mapNotNull { cache[it] ?: fresh[it] }
     }
 
@@ -215,7 +235,9 @@ class EdgeService : LifecycleService() {
      */
     private suspend fun resolveWithIcons(keys: List<AppKey>): List<LaunchableApp>? = withContext(Dispatchers.Default) {
         try {
-            catalog.resolve(keys).withBitmaps(iconSizePx())
+            val px = iconSizePx()
+            // Check for cancellation between icons, so a superseded resolve stops early.
+            catalog.resolve(keys).map { ensureActive(); it.withBitmap(px) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -224,19 +246,23 @@ class EdgeService : LifecycleService() {
         }
     }
 
-    /** [app] with its icon drawn, reusing the drawing from an earlier open when there is one. */
-    private fun withRecentIcon(app: LaunchableApp): LaunchableApp {
+    /**
+     * [app] with its icon drawn, kept for later opens unless the cache was cleared since
+     * [generation] was taken (its data may be stale).
+     */
+    private fun withRecentIcon(app: LaunchableApp, generation: Int): LaunchableApp {
         if (app.bitmap != null) return app
-        val generation = iconGeneration
-        val drawn = listOf(app).withBitmaps(iconSizePx()).first()
-        if (generation == iconGeneration) {
-            if (recentIcons.size >= MAX_RECENT_ICONS) recentIcons.clear()
-            recentIcons[app.key] = drawn
+        val drawn = app.withBitmap(iconSizePx())
+        synchronized(iconLock) {
+            if (generation == iconGeneration) {
+                if (recentIcons.size >= MAX_RECENT_ICONS) recentIcons.clear()
+                recentIcons[app.key] = drawn
+            }
         }
         return drawn
     }
 
-    private fun clearRecentIcons() {
+    private fun clearRecentIcons() = synchronized(iconLock) {
         iconGeneration++
         recentIcons.clear()
     }
@@ -319,6 +345,8 @@ class EdgeService : LifecycleService() {
         private const val NOTIFICATION_ID = 1
         private const val FOREGROUND_RETRY_MS = 500L
         private const val MAX_RECENT_ICONS = 32
+        private const val APPS_CHANGED_DEBOUNCE_MS = 500L
+        private const val UNRESOLVABLE_RETRY_MS = 30_000L
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, EdgeService::class.java))

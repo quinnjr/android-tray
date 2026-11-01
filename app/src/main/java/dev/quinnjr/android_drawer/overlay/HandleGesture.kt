@@ -52,18 +52,28 @@ class HandleGesture(
 
     fun move(x: Float, y: Float, t: Long): GestureResult {
         if (!active) return GestureResult.None
-        if (dragging || tick(t)) return GestureResult.Move(x, y)
+        if (dragging) return GestureResult.Move(x, y)
 
         val dx = x - downX
         val dy = y - downY
-        if (hypot(dx, dy) > touchSlopPx) movedPastSlop = true
-        if (opened) return GestureResult.None
+        val pastSlop = hypot(dx, dy) > touchSlopPx
+        if (opened) {
+            movedPastSlop = movedPastSlop || pastSlop
+            return GestureResult.None
+        }
 
+        // Judge this move as a swipe first: a quick inward swipe whose first move arrives after
+        // the long-press time (the timer hadn't run yet) must still open, not pick the handle up.
         val inward = if (side == Side.RIGHT) -dx else dx
         if (inward >= openDistancePx && abs(dx) > abs(dy)) {
+            movedPastSlop = movedPastSlop || pastSlop
             opened = true
             return GestureResult.Open
         }
+        // Otherwise a long press that came due before this move (finger still within slop until
+        // now) picks the handle up, and this move is its first drag step.
+        if (tick(t)) return GestureResult.Move(x, y)
+        movedPastSlop = movedPastSlop || pastSlop
         return GestureResult.None
     }
 
