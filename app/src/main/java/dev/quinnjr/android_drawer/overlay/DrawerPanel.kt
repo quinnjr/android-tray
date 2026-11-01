@@ -200,8 +200,8 @@ private fun Panel(
 
     Surface(
         shape = RoundedCornerShape(28.dp),
-        // Opaque: the window itself is already slightly see-through (see OverlayHost.openDrawer).
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        // The darkest surface of the (always dark) theme, fully opaque.
+        color = MaterialTheme.colorScheme.surfaceContainerLowest,
         tonalElevation = 6.dp,
         shadowElevation = 8.dp,
         modifier = Modifier

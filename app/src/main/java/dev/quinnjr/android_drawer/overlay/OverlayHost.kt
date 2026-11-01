@@ -163,12 +163,6 @@ class OverlayHost(
         val params = overlayParams(0).apply {
             width = WindowManager.LayoutParams.MATCH_PARENT
             height = WindowManager.LayoutParams.MATCH_PARENT
-            // Android 12+ blocks touches through another app's overlay above this opacity, even an
-            // untouchable one, so taps on the app behind would be lost while the drawer leaves.
-            // Set for the drawer's whole life (not at close, which would visibly dim it in a step).
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                alpha = context.getSystemService(InputManager::class.java).maximumObscuringOpacityForTouch
-            }
         }
         drawerParams = params
         add(root, params)
@@ -190,6 +184,12 @@ class OverlayHost(
         if (view != null && params != null) {
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            // Android 12+ blocks touches through another app's overlay above this opacity, even an
+            // untouchable one, so taps on the app behind would be lost while the drawer leaves. The
+            // drawer stays fully opaque while open; the step down comes as its fade-out begins.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                params.alpha = context.getSystemService(InputManager::class.java).maximumObscuringOpacityForTouch
+            }
             update(view, params)
         }
         applyHandleVisibility()
