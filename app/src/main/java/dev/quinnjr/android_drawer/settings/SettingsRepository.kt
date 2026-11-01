@@ -15,6 +15,8 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dev.quinnjr.android_drawer.TAG
+import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -42,8 +44,8 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
 /**
  * The app's settings: one instance per process ([get]), holding them in memory. A change is applied
  * there at once (every reader sees it immediately), then saved; if saving fails, memory goes back
- * to what is on disk. This process is the file's only writer, so after the first read memory is
- * the truth.
+ * to what is on disk. The file is followed too, so a write from elsewhere (e.g. a backup being
+ * restored) shows up, unless a change of ours is still being saved over it.
  */
 class SettingsRepository private constructor(context: Context) {
     private val store = context.applicationContext.dataStore
@@ -66,23 +68,28 @@ class SettingsRepository private constructor(context: Context) {
     val settings: Flow<DrawerSettings> = current.filterNotNull()
 
     init {
-        // Retried (with backoff) on any error rather than given up on or crashing the app. Nothing
-        // is made up meanwhile: defaults (handle on, no apps) could undo what the user chose.
+        // A read error is retried with backoff rather than made up for: defaults (handle on, no
+        // apps) could undo what the user chose. I/O errors (e.g. storage not ready) are retried
+        // for as long as they last; anything else a few times, then it's a bug and crashes.
         scope.launch {
-            val stored = store.data
+            store.data
                 .retryWhen { cause, attempt ->
-                    Log.w(TAG, "Could not read settings; retrying", cause)
-                    delay((attempt + 1).coerceAtMost(MAX_RETRY_STEPS) * RETRY_STEP_MS)
-                    true
+                    val retry = cause is IOException || attempt < OTHER_ERROR_RETRIES
+                    if (retry) {
+                        Log.w(TAG, "Could not read settings; retrying", cause)
+                        delay((attempt + 1).coerceAtMost(MAX_RETRY_STEPS) * RETRY_STEP_MS)
+                    }
+                    retry
                 }
-                .first()
-                .toSettings()
-            synchronized(stateLock) {
-                if (current.value == null) {
-                    onDisk = stored
-                    current.value = stored
-                }
-            }
+                .collect { prefs -> fromDisk(prefs.toSettings()) }
+        }
+    }
+
+    /** The file as read: taken as the settings unless a change of ours isn't saved yet. */
+    private fun fromDisk(stored: DrawerSettings) = synchronized(stateLock) {
+        if (current.value == null || version == onDiskVersion) {
+            onDisk = stored
+            current.value = stored
         }
     }
 
@@ -124,6 +131,8 @@ class SettingsRepository private constructor(context: Context) {
                     onDiskVersion = nextVersion
                 }
                 return true
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Could not save settings", e)
                 synchronized(stateLock) {
@@ -187,5 +196,6 @@ class SettingsRepository private constructor(context: Context) {
         private val ICONS_LOCKED = booleanPreferencesKey("icons_locked")
         private const val RETRY_STEP_MS = 1_000L
         private const val MAX_RETRY_STEPS = 30L
+        private const val OTHER_ERROR_RETRIES = 3L
     }
 }

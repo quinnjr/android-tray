@@ -21,14 +21,11 @@ import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.movedAmongShown
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
@@ -38,6 +35,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -52,13 +50,14 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     /** Follows the activity's configuration (it is recreated on changes; this ViewModel isn't). */
     private val drawConfig = MutableStateFlow<DrawConfig?>(null)
 
-    private val failedSaves = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    /** Held until collected, so one landing while the activity is recreated isn't lost. */
+    private val failedSaves = Channel<Unit>(Channel.CONFLATED)
 
-    /** Emits when a change couldn't be saved (and so was undone). */
-    val saveFailures: SharedFlow<Unit> = failedSaves.asSharedFlow()
+    /** Emits when a change couldn't be saved (and so was undone); collect from one place. */
+    val saveFailures: Flow<Unit> = failedSaves.receiveAsFlow()
 
-    val settings: StateFlow<DrawerSettings?> =
-        repo.settings.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+    /** The settings; null until first read. */
+    val settings: StateFlow<DrawerSettings?> = repo.state
 
     /**
      * App changes, watched for as long as this ViewModel lives so [icons] never misses one; a
@@ -139,7 +138,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun save(transform: (DrawerSettings) -> DrawerSettings) {
         if (!repo.update(transform)) {
-            failedSaves.tryEmit(Unit)
+            failedSaves.trySend(Unit)
         }
     }
 }

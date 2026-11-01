@@ -395,12 +395,12 @@ private fun PinnedGrid(
         val current = currentOrder
         val from = current.indexOfFirst { it.key == key }
         // Wait for the grid to lay out the previous move before moving again.
-        val laidOut = gridState.layoutInfo.visibleItemsInfo.any { it.index == from && currentIndexByKey[it.key] == from }
+        val layoutKey = key.encode()
+        val laidOut = gridState.layoutInfo.visibleItemsInfo.any { it.index == from && it.key == layoutKey }
         // By key, not index: the layout may still be a frame behind the list (e.g. after a reload).
         val to = appAt(pointer)?.let { info -> currentIndexByKey[info.key] } ?: return
-        if (laidOut && to >= 0 && to != from) {
+        if (laidOut && to != from) {
             drag.order = current.moved(from, to).map { it.key }
-            drag.moved = true
         }
     }
 
@@ -412,10 +412,10 @@ private fun PinnedGrid(
      */
     fun finishDrag() {
         val keys = drag.order
-        if (drag.key != null && drag.moved && keys != null) {
+        if (drag.key != null && keys != null) {
             val members = drag.start.toSet()
             val chosen = currentLatest.arrangedBy(keys) { it.key }.map { it.key }.filter { it in members }
-            // Moved and moved back: nothing to save.
+            // Not moved, or moved back: nothing to save.
             if (chosen != drag.start.filter { it in chosen }) {
                 currentOnReorder(chosen)
             }
@@ -530,8 +530,6 @@ private class GridDrag {
         private set
     /** The order being dragged, as keys (shown mapped onto the current apps). */
     var order by mutableStateOf<List<AppKey>?>(null)
-    /** Whether the user has moved anything (a long-press and release alone saves nothing). */
-    var moved = false
     /** The drag ended early (its app vanished) but the finger is still down. */
     var abandoned by mutableStateOf(false)
     /**
@@ -544,14 +542,12 @@ private class GridDrag {
     fun begin(key: AppKey, apps: List<LaunchableApp>) {
         order = apps.map { it.key }
         start = apps.map { it.key }
-        moved = false
         this.key = key
     }
 
     fun clear() {
         key = null
         order = null
-        moved = false
     }
 }
 
