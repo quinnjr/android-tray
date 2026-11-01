@@ -3,8 +3,10 @@ package dev.quinnjr.android_drawer.ui
 import android.app.Application
 import android.content.res.Configuration
 import android.provider.Settings
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.quinnjr.android_drawer.TAG
 import dev.quinnjr.android_drawer.apps.AppCatalog
 import dev.quinnjr.android_drawer.apps.AppSource
 import dev.quinnjr.android_drawer.apps.DrawConfig
@@ -19,6 +21,7 @@ import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.HANDLE_ALPHA_RANGE
 import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.movedAmongShown
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -90,7 +93,15 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
      */
     private suspend fun drawn(config: DrawConfig, load: (obtain: AppSource) -> List<LaunchableApp>): List<LaunchableApp> {
         icons.use(config)
-        return icons.load(load)
+        // As in the service: a failure (e.g. a profile removed meanwhile) mustn't crash the app.
+        return try {
+            icons.load(load)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not load apps", e)
+            emptyList()
+        }
     }
 
     /** Call from the activity on creation (including after a configuration change). */
@@ -121,6 +132,9 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     fun setAlpha(alpha: Float) = update { it.copy(handleAlpha = alpha.coerceIn(HANDLE_ALPHA_RANGE)) }
     fun setColor(color: Long) = update { it.copy(handleColor = color) }
     fun setIconsLocked(locked: Boolean) = update { it.copy(iconsLocked = locked) }
+
+    /** Unpins every app not in [available] (the ones that can be shown now). */
+    fun unpinAllBut(available: Set<AppKey>) = update { s -> s.copy(apps = s.apps.filter { it in available }) }
 
     private fun update(transform: (DrawerSettings) -> DrawerSettings) {
         viewModelScope.launch { repo.update(transform) }

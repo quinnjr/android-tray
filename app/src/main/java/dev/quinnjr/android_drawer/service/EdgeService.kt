@@ -42,7 +42,7 @@ import dev.quinnjr.android_drawer.ui.MainActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
@@ -50,9 +50,11 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 
 class EdgeService : LifecycleService() {
     private lateinit var repo: SettingsRepository
@@ -176,11 +178,8 @@ class EdgeService : LifecycleService() {
                 .collectLatest { keys ->
                     // Sized to the pinned apps (no LRU limit to thrash), minus any unpinned since.
                     pinnedIcons.retain(keys.toSet())
-                    coroutineScope {
-                        val job = launch { pinnedApps(keys) }
-                        warming = job
-                        job.join()
-                    }
+                    warming = currentCoroutineContext().job
+                    pinnedApps(keys)
                 }
         }
     }
@@ -194,8 +193,7 @@ class EdgeService : LifecycleService() {
         val recent = mutableStateOf<List<LaunchableApp>?>(null)
         openJob = lifecycleScope.launch {
             val keys = repo.settings.first().apps
-            // A warm-up in progress (e.g. after a config change) is drawing these same icons.
-            warming?.let { withTimeoutOrNull(WARM_WAIT_MS) { it.join() } }
+            awaitWarmUp()
             val shown = host.openDrawer(
                 apps = pinnedApps(keys),
                 hasPinned = keys.isNotEmpty(),
@@ -210,10 +208,39 @@ class EdgeService : LifecycleService() {
                 },
                 // Nobody will see the recents of a closed drawer.
                 onClosed = { recentJob?.cancel() },
+                // Only once the drawer has laid out room for them (none in a short landscape drawer).
+                onRecentsNeeded = {
+                    if (expectRecents && recent.value == null && recentJob?.isActive != true) {
+                        recentJob = lifecycleScope.launch { recent.value = recentApps(keys) }
+                    }
+                },
             )
-            recentJob?.cancel()
-            if (!shown || !expectRecents) { return@launch }
-            recentJob = lifecycleScope.launch { recent.value = recentApps(keys) }
+            if (!shown) {
+                recentJob?.cancel()
+            }
+        }
+    }
+
+    /**
+     * Waits (briefly) for a warm-up drawing the pinned icons, rather than drawing them again. A
+     * warm-up restarted meanwhile (e.g. by a rotation) is followed to the new one.
+     */
+    private suspend fun awaitWarmUp() {
+        withTimeoutOrNull(WARM_WAIT_MS) {
+            while (true) {
+                val job = warming ?: break
+                if (job.isActive) {
+                    job.join()
+                } else if (job.isCancelled) {
+                    // Superseded: let the restarted warm-up begin and publish itself, then follow it.
+                    yield()
+                    if (warming === job) {
+                        break
+                    }
+                } else {
+                    break
+                }
+            }
         }
     }
 

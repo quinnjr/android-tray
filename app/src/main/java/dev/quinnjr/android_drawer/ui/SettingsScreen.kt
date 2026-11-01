@@ -29,6 +29,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -62,6 +63,7 @@ fun SettingsScreen(
     onGrantUsageAccess: () -> Unit,
     onEnabledChange: (Boolean) -> Unit,
     onEditApps: () -> Unit,
+    onUnpinUnavailable: () -> Unit,
     onMoveApp: (from: Int, to: Int) -> Unit,
     onIconsLockedChange: (Boolean) -> Unit,
     onHeightChange: (Int) -> Unit,
@@ -127,13 +129,31 @@ fun SettingsScreen(
             item { SectionTitle("Drawer apps") }
             if (chosenApps == null) {
                 item { CircularProgressIndicator(Modifier.padding(horizontal = 16.dp).size(24.dp)) }
-            } else if (chosenApps.isEmpty()) {
+            } else if (chosenApps.isEmpty() && settings.apps.isEmpty()) {
                 item {
                     Text(
                         "No apps chosen yet.",
                         Modifier.padding(horizontal = 16.dp),
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                }
+            }
+            // Pinned apps that can't be shown now (e.g. a paused work profile): say so, and let
+            // them be unpinned, since the picker can't show them either.
+            val unavailable = settings.apps.size - shown.size
+            if (chosenApps != null && unavailable > 0) {
+                item {
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                        Text(
+                            if (unavailable == 1) {
+                                "1 pinned app isn't available right now (e.g. its work profile is paused)."
+                            } else {
+                                "$unavailable pinned apps aren't available right now (e.g. their work profile is paused)."
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        TextButton(onClick = onUnpinUnavailable) { Text("Unpin unavailable apps") }
+                    }
                 }
             }
             itemsIndexed(shown, key = { _, app -> app.key.encode() }) { index, app ->

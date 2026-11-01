@@ -49,6 +49,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
@@ -69,8 +70,10 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.toOffset
@@ -117,47 +120,56 @@ fun DrawerPanel(
     onLaunch: (LaunchableApp, Rect?) -> Unit,
     onReorder: (List<AppKey>) -> Unit,
     onOpenSettings: () -> Unit,
+    /** Called when the layout has room for recents, so they're only read when they'll be shown. */
+    onRecentsNeeded: () -> Unit,
     onDismiss: () -> Unit,
     onHidden: () -> Unit,
 ) {
     LaunchedEffect(visible.isIdle, visible.currentState) {
         if (visible.isIdle && !visible.currentState && !visible.targetState) { onHidden() }
     }
-    // Always dark so the white app labels stay readable whatever the system theme.
+    // Always dark so the white app labels stay readable whatever the system theme. Laid out left to
+    // right whatever the language: the handle, slides and gestures all use the physical edges
+    // (right-to-left text still renders correctly).
     AppTheme(dark = true) {
-        val fromRight = side == Side.RIGHT
-        Box(
-            Modifier
-                .fillMaxSize()
-                .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onDismiss),
-        ) {
-            // One transition for scrim and panel: `visible` only reports hidden once both have
-            // finished leaving, so the window is never removed mid-slide.
-            AnimatedVisibility(visibleState = visible, enter = EnterTransition.None, exit = ExitTransition.None) {
-                Box(Modifier.fillMaxSize()) {
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .animateEnterExit(enter = fadeIn(), exit = fadeOut())
-                            .background(Color.Black.copy(alpha = 0.3f)),
-                    )
-                    val offscreen = { width: Int ->
-                        if (fromRight) {
-                            width
-                        } else {
-                            -width
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+            val fromRight = side == Side.RIGHT
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onDismiss),
+            ) {
+                // One transition for scrim and panel: `visible` only reports hidden once both have
+                // finished leaving, so the window is never removed mid-slide.
+                AnimatedVisibility(visibleState = visible, enter = EnterTransition.None, exit = ExitTransition.None) {
+                    Box(Modifier.fillMaxSize()) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .animateEnterExit(enter = fadeIn(), exit = fadeOut())
+                                .background(Color.Black.copy(alpha = 0.3f)),
+                        )
+                        val offscreen = { width: Int ->
+                            if (fromRight) {
+                                width
+                            } else {
+                                -width
+                            }
                         }
-                    }
-                    Box(
-                        Modifier
-                            .align(if (fromRight) { Alignment.TopEnd } else { Alignment.TopStart })
-                            .fillMaxHeight()
-                            .animateEnterExit(
-                                enter = slideInHorizontally(initialOffsetX = offscreen) + fadeIn(),
-                                exit = slideOutHorizontally(targetOffsetX = offscreen) + fadeOut(),
-                            ),
-                    ) {
-                        Panel(apps, recent, expectRecents, hasPinned, fromRight, iconsLocked, onLaunch, onReorder, onOpenSettings, onDismiss)
+                        Box(
+                            Modifier
+                                .align(if (fromRight) { Alignment.TopEnd } else { Alignment.TopStart })
+                                .fillMaxHeight()
+                                .animateEnterExit(
+                                    enter = slideInHorizontally(initialOffsetX = offscreen) + fadeIn(),
+                                    exit = slideOutHorizontally(targetOffsetX = offscreen) + fadeOut(),
+                                ),
+                        ) {
+                            Panel(
+                                apps, recent, expectRecents, hasPinned, fromRight, iconsLocked,
+                                onLaunch, onReorder, onOpenSettings, onRecentsNeeded, onDismiss,
+                            )
+                        }
                     }
                 }
             }
@@ -178,6 +190,7 @@ private fun Panel(
     onLaunch: (LaunchableApp, Rect?) -> Unit,
     onReorder: (List<AppKey>) -> Unit,
     onOpenSettings: () -> Unit,
+    onRecentsNeeded: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val dismissPx = with(LocalDensity.current) { DISMISS_DRAG.toPx() }
@@ -227,6 +240,11 @@ private fun Panel(
             Column(Modifier.padding(top = 16.dp)) {
                 // Fixed above the scrolling pinned apps, so recents arriving late never shift or hide them.
                 if (recentRows > 0) { RecentSection(recent.value?.take(recentRows * COLUMNS), recentRows, onLaunch) }
+                LaunchedEffect(recentRows > 0) {
+                    if (recentRows > 0) {
+                        onRecentsNeeded()
+                    }
+                }
                 Box(Modifier.weight(1f)) {
                     if (apps.isEmpty()) {
                         NoApps(hasPinned, onOpenSettings, Modifier.fillMaxSize())

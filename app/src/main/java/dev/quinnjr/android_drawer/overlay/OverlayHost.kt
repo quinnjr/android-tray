@@ -3,6 +3,7 @@ package dev.quinnjr.android_drawer.overlay
 import android.content.Context
 import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.hardware.input.InputManager
 import android.os.Build
 import android.util.DisplayMetrics
 import android.util.Log
@@ -111,6 +112,7 @@ class OverlayHost(
         onOpenSettings: () -> Unit,
         /** Called once the drawer has been removed. */
         onClosed: () -> Unit,
+        onRecentsNeeded: () -> Unit,
     ): Boolean {
         val s = settings ?: return false
         if (drawer != null) {
@@ -147,6 +149,7 @@ class OverlayHost(
                         closeDrawer()
                     }
                 },
+                onRecentsNeeded = onRecentsNeeded,
                 onDismiss = ::closeDrawer,
                 // Leave the composition before tearing down its window.
                 onHidden = { root.post { if (drawer === root) { removeDrawer() } } },
@@ -169,6 +172,10 @@ class OverlayHost(
     /** Starts the exit animation; the window is removed when it finishes. */
     fun closeDrawer() {
         val state = drawerState ?: return
+        // Back, Home, focus loss (which the changes below themselves cause) can all ask again.
+        if (!state.targetState) {
+            return
+        }
         state.targetState = false
         // The handle comes back as the drawer starts to leave, so it can be swiped again at once;
         // the leaving drawer (above it) stops taking touches and focus so the swipe reaches it.
@@ -177,6 +184,11 @@ class OverlayHost(
         if (view != null && params != null) {
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            // Android 12+ blocks touches through another app's overlay above this opacity, even an
+            // untouchable one, so taps on the app behind would be lost while the drawer leaves.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                params.alpha = context.getSystemService(InputManager::class.java).maximumObscuringOpacityForTouch
+            }
             update(view, params)
         }
         applyHandleVisibility()

@@ -1,6 +1,7 @@
 package dev.quinnjr.android_drawer.settings
 
 import android.content.Context
+import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.Preferences
@@ -12,11 +13,16 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import dev.quinnjr.android_drawer.TAG
 import java.io.IOException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.retryWhen
 
 // A corrupt file (e.g. power lost mid-write) is replaced with defaults rather than crashing.
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
@@ -27,13 +33,42 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
 class SettingsRepository(context: Context) {
     private val store = context.applicationContext.dataStore
 
-    /** Falls back to defaults if the file can't be read, rather than failing every collector. */
-    val settings: Flow<DrawerSettings> = store.data
-        .catch { e -> if (e is IOException) { emit(emptyPreferences()) } else { throw e } }
+    /**
+     * The settings, kept up to date. If the file can't be read the flow keeps retrying (with
+     * backoff) rather than ending, so long-lived collectors still see later changes; until a first
+     * read succeeds, defaults are emitted so nobody waits forever.
+     */
+    val settings: Flow<DrawerSettings> = flow {
+        var readOnce = false
+        emitAll(
+            store.data
+                .onEach { readOnce = true }
+                .retryWhen { cause, attempt ->
+                    if (cause !is IOException) {
+                        return@retryWhen false
+                    }
+                    Log.w(TAG, "Could not read settings; retrying", cause)
+                    if (!readOnce) {
+                        emit(emptyPreferences())
+                    }
+                    delay((attempt + 1).coerceAtMost(MAX_RETRY_STEPS) * RETRY_STEP_MS)
+                    true
+                },
+        )
+    }
         .map { it.toSettings() }
         .distinctUntilChanged()
 
+    /** Applies [transform]; a failed write (e.g. storage full) is logged rather than crashing the caller. */
     suspend fun update(transform: (DrawerSettings) -> DrawerSettings) {
+        try {
+            write(transform)
+        } catch (e: IOException) {
+            Log.e(TAG, "Could not save settings", e)
+        }
+    }
+
+    private suspend fun write(transform: (DrawerSettings) -> DrawerSettings) {
         store.edit { prefs ->
             val next = transform(prefs.toSettings())
             prefs[ENABLED] = next.enabled
@@ -70,5 +105,7 @@ class SettingsRepository(context: Context) {
         val COLOR = longPreferencesKey("handle_color")
         val APPS = stringPreferencesKey("apps")
         val ICONS_LOCKED = booleanPreferencesKey("icons_locked")
+        const val RETRY_STEP_MS = 1_000L
+        const val MAX_RETRY_STEPS = 30L
     }
 }

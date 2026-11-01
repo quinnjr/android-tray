@@ -25,6 +25,7 @@ import androidx.core.graphics.drawable.toBitmap
 import dev.quinnjr.android_drawer.TAG
 import dev.quinnjr.android_drawer.settings.AppKey
 import java.text.Collator
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
@@ -73,7 +74,7 @@ class AppCatalog(context: Context) {
     fun allApps(obtain: AppSource = MakeEach): List<LaunchableApp> {
         val collator = Collator.getInstance()
         return activities()
-            .map { (key, info) -> obtain(key) { info.toApp(key) } }
+            .mapNotNull { (key, info) -> obtainOrSkip(obtain, key) { info.toApp(key) } }
             .map { collator.getCollationKey(it.label) to it }
             .sortedBy { it.first }
             .map { it.second }
@@ -111,7 +112,7 @@ class AppCatalog(context: Context) {
                     }
                 }
         }
-        return shown.mapNotNull { key -> known[key] ?: found[key]?.let { info -> obtain(key) { info.toApp(key) } } }
+        return shown.mapNotNull { key -> known[key] ?: found[key]?.let { info -> obtainOrSkip(obtain, key) { info.toApp(key) } } }
     }
 
     /** Profiles whose apps can be shown now (unlocked, not paused), by serial number. */
@@ -154,10 +155,23 @@ class AppCatalog(context: Context) {
                 .take(limit)
                 .toList()
         }
-        return picked.map { info ->
+        return picked.mapNotNull { info ->
             val key = AppKey(info.componentName.flattenToString(), serial)
-            obtain(key) { info.toApp(key) }
+            obtainOrSkip(obtain, key) { info.toApp(key) }
         }
+    }
+
+    /**
+     * One app through [obtain], or null if loading it failed (e.g. a broken icon, or its profile
+     * just went away): one bad app is left out rather than failing the whole list.
+     */
+    private inline fun obtainOrSkip(obtain: AppSource, key: AppKey, crossinline make: () -> LaunchableApp): LaunchableApp? = try {
+        obtain(key) { make() }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "Could not load $key", e)
+        null
     }
 
     /** Personal-profile launcher entries by package, cached until [invalidate]. */
