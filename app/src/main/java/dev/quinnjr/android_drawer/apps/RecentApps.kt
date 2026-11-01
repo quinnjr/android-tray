@@ -37,7 +37,9 @@ class RecentApps(private val context: Context) {
         }
         settled = h
         settledUntil = settleAt
-        block(h.copy().replay(events(settleAt, now)))
+        // Recent events go on a copy, as they may still change; skip the copy when there are none.
+        val tail = events(settleAt, now)
+        block(if (tail.isEmpty()) h else h.copy().replay(tail))
     }
 
     fun hasAccess(): Boolean {
@@ -58,7 +60,11 @@ class RecentApps(private val context: Context) {
         while (events.getNextEvent(event)) {
             val kind = when (event.eventType) {
                 UsageEvents.Event.ACTIVITY_RESUMED -> UsageEvent.Kind.RESUMED
-                UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED -> UsageEvent.Kind.LEFT
+                // Not ACTIVITY_STOPPED: it always follows a pause, and can arrive after a newer
+                // instance of the same activity resumed (list → detail of one class), so it would
+                // wrongly take the app off screen. DESTROYED covers activities torn down without a
+                // recorded pause (e.g. a crash), where the platform reports it.
+                UsageEvents.Event.ACTIVITY_PAUSED, ACTIVITY_DESTROYED -> UsageEvent.Kind.LEFT
                 // Everything on screen pauses then, and resumes again (with a new event) after.
                 UsageEvents.Event.DEVICE_SHUTDOWN,
                 UsageEvents.Event.DEVICE_STARTUP,
@@ -92,6 +98,11 @@ class RecentApps(private val context: Context) {
         const val LOOKBACK_MS = 3L * 24 * 60 * 60 * 1000
         const val REBUILD_MS = 24L * 60 * 60 * 1000
         const val SETTLE_MS = 60L * 1000
+        /**
+         * UsageEvents.Event.ACTIVITY_DESTROYED, which isn't in the public SDK. Handled in case the
+         * platform delivers it; if not, screen-off/lock still clears a crashed app (see reset()).
+         */
+        const val ACTIVITY_DESTROYED = 24
     }
 }
 
@@ -150,8 +161,9 @@ internal class UsageHistory {
     }
 
     /**
-     * The (at most two, for split screen) most recently resumed apps still resumed. Older ones
-     * still marked resumed just never had a pause recorded; a [reset] clears those.
+     * The (at most two, for split screen) most recently resumed apps still resumed. An app whose
+     * pause was never recorded (e.g. it crashed) is cleared by its destroyed event if delivered,
+     * or else by the next [reset] (screen-off or lock).
      */
     private fun onScreen(): Set<String> = resumed.entries
         .sortedByDescending { it.value }

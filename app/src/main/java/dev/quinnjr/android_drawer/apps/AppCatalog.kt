@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.os.SystemClock
 import android.os.UserHandle
 import android.os.UserManager
 import android.util.Log
@@ -21,10 +22,13 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
+import dev.quinnjr.android_drawer.TAG
 import dev.quinnjr.android_drawer.settings.AppKey
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.debounce
 
 data class LaunchableApp(
     val key: AppKey,
@@ -40,12 +44,9 @@ data class LaunchableApp(
 fun Drawable.toImageBitmap(sizePx: Int): ImageBitmap = toBitmap(sizePx, sizePx).asImageBitmap()
 
 /**
- * Pre-renders each app's icon at [sizePx] and drops the drawable, which the long-running service
- * would otherwise keep alongside it. Call off the main thread.
+ * This app with its icon pre-rendered at [sizePx] and the drawable dropped, which the
+ * long-running service would otherwise keep alongside it. Call off the main thread.
  */
-fun List<LaunchableApp>.withBitmaps(sizePx: Int): List<LaunchableApp> = map { it.withBitmap(sizePx) }
-
-/** This app with its icon pre-rendered at [sizePx] and the drawable dropped. */
 fun LaunchableApp.withBitmap(sizePx: Int): LaunchableApp = copy(bitmap = icon?.toImageBitmap(sizePx), icon = null)
 
 class AppCatalog(context: Context) {
@@ -53,6 +54,7 @@ class AppCatalog(context: Context) {
     private val entriesLock = Any()
     @Volatile private var entriesCache: Map<String, List<LauncherActivityInfo>>? = null
     @Volatile private var entriesGeneration = 0
+    @Volatile private var homeCache: Pair<Long, Set<String>>? = null
     private val launcherApps = context.getSystemService(LauncherApps::class.java)
     private val userManager = context.getSystemService(UserManager::class.java)
 
@@ -79,7 +81,7 @@ class AppCatalog(context: Context) {
                     if (key in group) found[key] = key to info
                 }
         }
-        return resolveInOrder(keys, found).map { (key, info) -> info.toApp(key) }
+        return keys.mapNotNull { found[it] }.map { (key, info) -> info.toApp(key) }
     }
 
     /**
@@ -93,11 +95,11 @@ class AppCatalog(context: Context) {
         cached: (AppKey) -> LaunchableApp? = { null },
         limit: Int = RECENT_LIMIT,
     ): List<LaunchableApp> {
-        if (!recents.hasAccess()) return emptyList()
+        // Callers check recents.hasAccess() first (the drawer needs it to lay out anyway).
         val me = Process.myUserHandle()
         val serial = userManager.getSerialNumberForUser(me)
         val byPackage = personalEntries()
-        val excluded = recents.homePackages() + packageName
+        val excluded = homePackages(recents) + packageName
         val pinnedHere = pinned.filter { it.userSerial == serial }.mapTo(HashSet()) { it.component }
         fun LauncherActivityInfo.isPinned() = componentName.flattenToString() in pinnedHere
 
@@ -139,6 +141,17 @@ class AppCatalog(context: Context) {
     fun invalidate() = synchronized(entriesLock) {
         entriesGeneration++
         entriesCache = null
+        homeCache = null
+    }
+
+    /**
+     * Home apps, cached briefly: choosing a different default launcher sends no event, so the
+     * cache also expires on its own.
+     */
+    private fun homePackages(recents: RecentApps): Set<String> {
+        val now = SystemClock.elapsedRealtime()
+        homeCache?.takeIf { now - it.first < HOME_CACHE_MS }?.let { return it.second }
+        return recents.homePackages().also { homeCache = now to it }
     }
 
     private fun activities(): List<Pair<AppKey, LauncherActivityInfo>> = launcherApps.profiles
@@ -172,12 +185,16 @@ class AppCatalog(context: Context) {
     companion object {
         /** How many recent apps the drawer shows. */
         const val RECENT_LIMIT = 4
-        private const val TAG = "EdgeDrawer"
+        private const val HOME_CACHE_MS = 60_000L
     }
 }
 
-internal fun <T> resolveInOrder(keys: List<AppKey>, available: Map<AppKey, T>): List<T> =
-    keys.mapNotNull { available[it] }
+/** How long app changes must settle before a burst of them (e.g. many updates) is acted on once. */
+private const val APPS_CHANGED_DEBOUNCE_MS = 500L
+
+/** [appsChanged] events, with a burst collapsed into one once it settles. */
+@OptIn(FlowPreview::class)
+fun Flow<Unit>.settled(): Flow<Unit> = debounce(APPS_CHANGED_DEBOUNCE_MS)
 
 /**
  * Emits whenever an app is installed, removed or changed in any profile, or a profile

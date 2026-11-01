@@ -71,7 +71,8 @@ class HandleGesture(
             return GestureResult.Open
         }
         // Otherwise a long press that came due before this move (finger still within slop until
-        // now) picks the handle up, and this move is its first drag step.
+        // now) picks the handle up, and this move is its first drag step. The finger really did
+        // rest for the long-press time; the timer, had it run on time, would have done the same.
         if (tick(t)) return GestureResult.Move(x, y)
         movedPastSlop = movedPastSlop || pastSlop
         return GestureResult.None

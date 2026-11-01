@@ -34,6 +34,7 @@ class HandleView(
     private var pendingGesture: HandleGesture? = null
     private var touching = false
     private var dragging = false
+    val isDragging get() = dragging
 
     private val longPress = Runnable {
         if (gesture?.tick(SystemClock.uptimeMillis()) == true) startDrag()

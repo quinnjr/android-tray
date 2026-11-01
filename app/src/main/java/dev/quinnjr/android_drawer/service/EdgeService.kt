@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
 import android.view.WindowManager
@@ -23,10 +24,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import dev.quinnjr.android_drawer.R
+import dev.quinnjr.android_drawer.TAG
 import dev.quinnjr.android_drawer.apps.AppCatalog
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.RecentApps
 import dev.quinnjr.android_drawer.apps.appsChanged
+import dev.quinnjr.android_drawer.apps.settled
 import dev.quinnjr.android_drawer.apps.withBitmap
 import dev.quinnjr.android_drawer.overlay.DRAWER_ICON_SIZE
 import dev.quinnjr.android_drawer.overlay.OverlayHost
@@ -39,12 +42,10 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -55,7 +56,7 @@ import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
+@OptIn(ExperimentalCoroutinesApi::class)
 class EdgeService : LifecycleService() {
     private lateinit var repo: SettingsRepository
     private lateinit var host: OverlayHost
@@ -82,6 +83,8 @@ class EdgeService : LifecycleService() {
     @Volatile private var iconGeneration = 0
     private val iconLock = Any()
     private var foreground = false
+    /** Started through startForegroundService(), so startForeground() is mandatory. */
+    private var foregroundRequired = false
     private var retryScheduled = false
 
     private val appOps by lazy { getSystemService(AppOpsManager::class.java) }
@@ -91,7 +94,7 @@ class EdgeService : LifecycleService() {
     }
 
     private val configCallbacks = object : ComponentCallbacks {
-        override fun onConfigurationChanged(newConfig: Configuration) = onDisplayChanged()
+        override fun onConfigurationChanged(newConfig: Configuration) = onDisplayChanged(newConfig)
 
         @Deprecated("Deprecated in Java")
         override fun onLowMemory() = Unit
@@ -115,7 +118,7 @@ class EdgeService : LifecycleService() {
             onFatal = ::stopSelf,
         )
         if (overlayContext !== this) overlayContext.registerComponentCallbacks(configCallbacks)
-        displayConfig.value = currentDisplayConfig()
+        displayConfig.value = DisplayConfig.of(overlayContext.resources.configuration)
         appOps.startWatchingMode(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, packageName, overlayPermissionListener)
         lifecycleScope.launch {
             repo.settings.collect { s ->
@@ -128,7 +131,10 @@ class EdgeService : LifecycleService() {
                         // The exemption needs the handle actually on screen, i.e. after a frame.
                         mainHandler.postDelayed({
                             foreground = tryStartForeground()
-                            if (!foreground) stopSelf()
+                            // Only a plain (sticky-restart) start can get here: for one through
+                            // startForegroundService() the system already allowed the foreground
+                            // start, and stopping before startForeground() would crash the app.
+                            if (!foreground && !foregroundRequired) stopSelf()
                         }, FOREGROUND_RETRY_MS)
                     }
                 }
@@ -146,7 +152,7 @@ class EdgeService : LifecycleService() {
                         catalog.invalidate()
                         clearRecentIcons()
                     }
-                    .debounce(APPS_CHANGED_DEBOUNCE_MS)
+                    .settled()
                     .onStart { emit(Unit) },
                 displayConfig,
             ) { keys, _, _ -> keys }
@@ -226,6 +232,8 @@ class EdgeService : LifecycleService() {
             unresolvable = unresolvable - fresh.keys
             unresolvableSince = SystemClock.elapsedRealtime()
         }
+        // Keep what was just resolved, so the next open doesn't resolve it again.
+        if (fresh.isNotEmpty()) resolved.value = cache + fresh
         return keys.mapNotNull { cache[it] ?: fresh[it] }
     }
 
@@ -267,32 +275,46 @@ class EdgeService : LifecycleService() {
         recentIcons.clear()
     }
 
-    private fun onDisplayChanged() {
+    /**
+     * Read from the [Configuration] passed in rather than the overlay context's resources: on
+     * Android 11 those callbacks arrive before (or without) the window context's resources updating.
+     */
+    private fun onDisplayChanged(newConfig: Configuration) {
         host.relayout()
-        val config = currentDisplayConfig()
+        val config = DisplayConfig.of(newConfig)
         if (config != displayConfig.value) {
             clearRecentIcons()
             displayConfig.value = config
         }
     }
 
-    private fun currentDisplayConfig(): DisplayConfig {
-        val res = overlayContext.resources
-        return DisplayConfig(
-            density = res.displayMetrics.density,
-            locales = res.configuration.locales.toLanguageTags(),
-            nightMode = res.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK,
-        )
+    /** Density (icon size), language (labels) and dark mode (themed icons). */
+    private data class DisplayConfig(val density: Float, val locales: String, val nightMode: Int) {
+        companion object {
+            fun of(c: Configuration) = DisplayConfig(
+                density = c.densityDpi.toFloat() / DisplayMetrics.DENSITY_DEFAULT,
+                locales = c.locales.toLanguageTags(),
+                nightMode = c.uiMode and Configuration.UI_MODE_NIGHT_MASK,
+            )
+        }
     }
 
-    /** Density (icon size), language (labels) and dark mode (themed icons). */
-    private data class DisplayConfig(val density: Float, val locales: String, val nightMode: Int)
+    private fun iconSizePx(): Int {
+        val density = displayConfig.value?.density ?: overlayContext.resources.displayMetrics.density
+        return (DRAWER_ICON_SIZE.value * density).roundToInt()
+    }
 
-    private fun iconSizePx(): Int = (DRAWER_ICON_SIZE.value * overlayContext.resources.displayMetrics.density).roundToInt()
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.getBooleanExtra(EXTRA_FOREGROUND_REQUIRED, false) == true) {
+            foregroundRequired = true
+            if (!foreground) foreground = tryStartForeground()
+        }
+        return super.onStartCommand(intent, flags, startId)
+    }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        if (overlayContext === this) onDisplayChanged()
+        if (overlayContext === this) onDisplayChanged(newConfig)
     }
 
     override fun onDestroy() {
@@ -340,16 +362,18 @@ class EdgeService : LifecycleService() {
     }
 
     companion object {
-        private const val TAG = "EdgeDrawer"
         private const val CHANNEL_ID = "edge_handle"
         private const val NOTIFICATION_ID = 1
         private const val FOREGROUND_RETRY_MS = 500L
         private const val MAX_RECENT_ICONS = 32
-        private const val APPS_CHANGED_DEBOUNCE_MS = 500L
         private const val UNRESOLVABLE_RETRY_MS = 30_000L
 
+        private const val EXTRA_FOREGROUND_REQUIRED = "foreground_required"
+
         fun start(context: Context) {
-            context.startForegroundService(Intent(context, EdgeService::class.java))
+            context.startForegroundService(
+                Intent(context, EdgeService::class.java).putExtra(EXTRA_FOREGROUND_REQUIRED, true),
+            )
         }
 
         fun stop(context: Context) {

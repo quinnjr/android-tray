@@ -14,12 +14,12 @@ import android.view.WindowManager
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.runtime.State
 import androidx.compose.ui.platform.ComposeView
+import dev.quinnjr.android_drawer.TAG
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.Side
 
-private const val TAG = "EdgeDrawer"
 private const val HANDLE_TOUCH_WIDTH_DP = 24
 
 /**
@@ -62,7 +62,9 @@ class OverlayHost(
         ).also { handle = it }
         val screen = screenSize()
         view.configure(s.side, s.handleColor, s.handleAlpha, screen.width)
-        placeHandle(s, screen)
+        // While the handle is being dragged it follows the finger; a settings write or rotation
+        // landing meanwhile must not snap it back to the stored spot.
+        if (!view.isDragging) placeHandle(s, screen)
         applyHandleVisibility()
         if (view in added) update(view, handleParams) else add(view, handleParams)
         if (!watching) {
