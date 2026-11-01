@@ -321,17 +321,24 @@ private fun PinnedGrid(
     val gridState = rememberLazyGridState()
     val haptics = LocalHapticFeedback.current
     val edgePx = with(LocalDensity.current) { AUTOSCROLL_EDGE.toPx() }
-    // While a drag is in progress its order is shown: a reload meanwhile mustn't move icons under
-    // the finger. Apps it removes (e.g. uninstalled) still go at once, and if that's the one being
-    // dragged, the drag ends. The released order then shows at once: the service applies it while
-    // it saves.
-    val latestKeys = latest?.mapTo(HashSet()) { it.key }
-    val stillThere = drag.order?.filter { latestKeys == null || it.key in latestKeys }
-    if (drag.key != null && stillThere != null && stillThere.none { it.key == drag.key }) {
+    // While a drag is in progress its order is shown, mapped onto the current apps: a reload
+    // meanwhile mustn't move icons under the finger, but updated icons show, removed apps go (the
+    // drag ends if it's the dragged one) and newly pinned ones are added at the end. The released
+    // order then shows at once: the service applies it while it saves.
+    val dragged = drag.order?.let { keys ->
+        if (latest == null) {
+            keys.mapNotNull(drag.snapshot::get)
+        } else {
+            val byKey = latest.associateBy { it.key }
+            val inDrag = keys.toSet()
+            keys.mapNotNull(byKey::get) + latest.filter { it.key !in inDrag }
+        }
+    }
+    if (drag.key != null && dragged != null && dragged.none { it.key == drag.key }) {
         SideEffect { drag.clear() }
     }
     val dragging = drag.key
-    val order = stillThere ?: latest.orEmpty()
+    val order = dragged ?: latest.orEmpty()
     // The gesture below outlives recompositions (it isn't restarted by reloads), so it reads this.
     val currentOrder by rememberUpdatedState(order)
     // Finger position in grid coordinates, and where on the icon it grabbed.
@@ -345,27 +352,27 @@ private fun PinnedGrid(
             position.y >= it.offset.y && position.y < it.offset.y + it.size.height
     }
 
-    /** Moves the lifted app into the slot under the finger. */
+    /** Moves the lifted app into the slot under the finger (indices of the list on screen). */
     fun followPointer() {
         val key = drag.key ?: return
-        val current = drag.order ?: return
+        val current = currentOrder
         val from = current.indexOfFirst { it.key == key }
         // Wait for the grid to lay out the previous move before moving again.
         val laidOut = gridState.layoutInfo.visibleItemsInfo.any { it.index == from && it.key == key.encode() }
         val target = appAt(pointer) ?: return
         if (laidOut && target.index != from) {
-            drag.order = current.moved(from, target.index)
+            drag.order = current.moved(from, target.index).map { it.key }
         }
     }
 
     /**
-     * Released: saves the new order if it changed. A cancelled drag (the drawer closed under the
-     * finger: Home, screen off) is an abort, as elsewhere on Android, so it saves nothing.
+     * Ends the drag, saving the new order if it changed: on release, and also when the system
+     * cancels the gesture (shade pulled, Home, screen off), so a rearrangement isn't lost.
      */
     fun finishDrag() {
-        val dragged = drag.order
-        if (drag.key != null && dragged != null && dragged.map { it.key } != drag.start) {
-            onReorder(dragged.map { it.key })
+        val keys = currentOrder.map { it.key }
+        if (drag.key != null && keys != drag.start) {
+            onReorder(keys)
         }
         drag.clear()
     }
@@ -403,9 +410,7 @@ private fun PinnedGrid(
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 },
                 onDragEnd = ::finishDrag,
-                // Cancelled (e.g. the drawer closed under the finger): nothing was released, so
-                // nothing is saved.
-                onDragCancel = drag::clear,
+                onDragCancel = ::finishDrag,
             ) { change, _ ->
                 if (drag.key == null) { return@detectDragGesturesAfterLongPress }
                 change.consume()
@@ -451,21 +456,27 @@ private fun PinnedGrid(
 private class GridDrag {
     var key by mutableStateOf<AppKey?>(null)
         private set
-    var order by mutableStateOf<List<LaunchableApp>?>(null)
+    /** The order being dragged, as keys (shown mapped onto the current apps). */
+    var order by mutableStateOf<List<AppKey>?>(null)
     /** The order when the drag started, to tell whether it changed. */
     var start: List<AppKey> = emptyList()
         private set
+    /** The apps as they were at the start, for while the current ones are reloading. */
+    var snapshot: Map<AppKey, LaunchableApp> = emptyMap()
+        private set
     val active: Boolean get() = key != null
 
-    fun begin(key: AppKey, order: List<LaunchableApp>) {
-        this.order = order
-        start = order.map { it.key }
+    fun begin(key: AppKey, apps: List<LaunchableApp>) {
+        start = apps.map { it.key }
+        snapshot = apps.associateBy { it.key }
+        order = start
         this.key = key
     }
 
     fun clear() {
         key = null
         order = null
+        snapshot = emptyMap()
     }
 }
 
