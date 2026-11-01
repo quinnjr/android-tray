@@ -228,16 +228,17 @@ class AppCatalog(context: Context) {
         user = user,
     )
 
-    /** Starts [app]; false if it couldn't be (e.g. it was uninstalled or its profile paused). */
-    fun launch(app: LaunchableApp, sourceBounds: Rect?): Boolean = try {
+    /** Starts [app], saying whether it did, or why not. */
+    fun launch(app: LaunchableApp, sourceBounds: Rect?): LaunchResult = try {
         launcherApps.startMainActivity(app.component, app.user, sourceBounds, null)
-        true
+        LaunchResult.STARTED
     } catch (e: ActivityNotFoundException) {
         Log.w(TAG, "App vanished: ${app.component}", e)
-        false
+        LaunchResult.GONE
     } catch (e: SecurityException) {
+        // E.g. its profile is paused: reloading wouldn't help.
         Log.w(TAG, "Not allowed to launch ${app.component}", e)
-        false
+        LaunchResult.NOT_ALLOWED
     }
 
     companion object {
@@ -248,7 +249,10 @@ class AppCatalog(context: Context) {
 }
 
 /** How long app changes must settle before a burst of them (e.g. many updates) is acted on once. */
-private const val APPS_CHANGED_DEBOUNCE_MS = 500L
+internal const val APPS_CHANGED_SETTLE_MS = 500L
+
+/** What happened when an app was started. */
+enum class LaunchResult { STARTED, GONE, NOT_ALLOWED }
 
 /** Resolved pinned apps, and the keys that are definitely unavailable (not merely failed to load). */
 data class Resolved(val apps: List<LaunchableApp>, val unavailable: Set<AppKey>)
@@ -273,7 +277,7 @@ val MakeEach: AppSource = { _, make -> make() }
 
 /** Events with a burst collapsed into one once it settles. */
 @OptIn(FlowPreview::class)
-fun <T> Flow<T>.settled(): Flow<T> = debounce(APPS_CHANGED_DEBOUNCE_MS)
+fun <T> Flow<T>.settled(): Flow<T> = debounce(APPS_CHANGED_SETTLE_MS)
 
 /** These app changes as reloads: a burst of [relevant] ones gives one, and there's one to start. */
 fun Flow<String?>.reloads(relevant: (pkg: String?) -> Boolean = { true }): Flow<Unit> =

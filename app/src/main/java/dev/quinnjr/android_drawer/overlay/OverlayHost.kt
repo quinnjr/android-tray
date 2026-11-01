@@ -111,6 +111,8 @@ class OverlayHost(
         /** How current the apps shown are (shown as a hint; launching from them is still fine). */
         status: State<PinnedStatus>,
         hasPinned: State<Boolean>,
+        /** A short message to show in the drawer (e.g. an app that couldn't be started), or null. */
+        notice: State<String?>,
         recent: State<List<LaunchableApp>?>,
         expectRecents: Boolean,
         /** Starts an app; false if it couldn't be (the drawer then stays open). */
@@ -139,6 +141,7 @@ class OverlayHost(
                 status = status,
                 recent = recent,
                 hasPinned = hasPinned,
+                notice = notice,
                 expectRecents = expectRecents,
                 side = s.side,
                 visible = state,

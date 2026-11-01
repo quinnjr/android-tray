@@ -121,6 +121,8 @@ fun DrawerPanel(
     expectRecents: Boolean,
     /** Whether any apps are pinned, even if none can be shown right now. */
     hasPinned: State<Boolean>,
+    /** A short message to show (e.g. an app that couldn't be started), or null. */
+    notice: State<String?>,
     side: Side,
     visible: MutableTransitionState<Boolean>,
     iconsLocked: Boolean,
@@ -173,7 +175,7 @@ fun DrawerPanel(
                                 ),
                         ) {
                             Panel(
-                                apps, status, recent, expectRecents, hasPinned, fromRight, iconsLocked,
+                                apps, status, recent, expectRecents, hasPinned, notice, fromRight, iconsLocked,
                                 onLaunch, onReorder, onOpenSettings, onRecentsNeeded, onDismiss,
                             )
                         }
@@ -194,6 +196,8 @@ private fun Panel(
     expectRecents: Boolean,
     /** Whether any apps are pinned, even if none can be shown right now. */
     hasPinned: State<Boolean>,
+    /** A short message to show (e.g. an app that couldn't be started), or null. */
+    notice: State<String?>,
     fromRight: Boolean,
     iconsLocked: Boolean,
     onLaunch: (LaunchableApp, Rect?) -> Unit,
@@ -259,8 +263,9 @@ private fun Panel(
                     val pinned = apps.value
                     val current = status.value
                     when {
-                        // Nothing loaded yet (or only an empty list, being reloaded).
-                        pinned == null || (pinned.isEmpty() && current == PinnedStatus.RELOADING) -> CircularProgressIndicator(
+                        // Nothing loaded yet (or only an empty list, while pinned apps are reloading;
+                        // with none pinned, "No apps yet" stays put through reloads).
+                        pinned == null || (pinned.isEmpty() && current == PinnedStatus.RELOADING && hasPinned.value) -> CircularProgressIndicator(
                             color = LABEL_COLOR,
                             modifier = Modifier.align(Alignment.Center).size(32.dp),
                         )
@@ -287,6 +292,15 @@ private fun Panel(
                             }
                         }
                     }
+                }
+                notice.value?.let { text ->
+                    Text(
+                        text,
+                        color = LABEL_COLOR,
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                    )
                 }
                 IconButton(
                     onClick = onOpenSettings,
