@@ -255,17 +255,8 @@ private fun Panel(
                     }
                 }
                 Box(Modifier.weight(1f)) {
-                    // A pinned app tapped while the list was reloading, launched once it's done.
-                    var queuedLaunch by remember { mutableStateOf<Pair<AppKey, Rect?>?>(null) }
                     val pinned = apps.value
                     val isReloading = reloading.value
-                    LaunchedEffect(isReloading, pinned) {
-                        val (key, bounds) = queuedLaunch ?: return@LaunchedEffect
-                        if (!isReloading) {
-                            queuedLaunch = null
-                            pinned?.firstOrNull { it.key == key }?.let { onLaunch(it, bounds) }
-                        }
-                    }
                     when {
                         // Nothing loaded yet (or only an empty list, being reloaded).
                         pinned == null || (pinned.isEmpty() && isReloading) -> CircularProgressIndicator(
@@ -275,20 +266,9 @@ private fun Panel(
                         pinned.isEmpty() -> NoApps(hasPinned.value, onOpenSettings, Modifier.fillMaxSize())
                         else -> {
                             // Stays composed while reloading (the last list is kept), so a press or
-                            // drag under way and the scroll position survive. A tap meanwhile waits
-                            // for the reload, then launches if the app is still there.
-                            PinnedGrid(
-                                pinned,
-                                iconsLocked,
-                                { app, bounds ->
-                                    if (reloading.value) {
-                                        queuedLaunch = app.key to bounds
-                                    } else {
-                                        onLaunch(app, bounds)
-                                    }
-                                },
-                                onReorder,
-                            )
+                            // drag under way and the scroll position survive. Taps launch at once: an
+                            // app gone meanwhile just isn't started. The reload only shows as a hint.
+                            PinnedGrid(pinned, iconsLocked, onLaunch, onReorder)
                             if (isReloading) {
                                 CircularProgressIndicator(
                                     color = LABEL_COLOR,
