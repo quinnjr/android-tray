@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -30,6 +31,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -46,7 +51,8 @@ val HANDLE_COLORS = listOf(0xFFB0B0B0, 0xFFFFFFFF, 0xFF4285F4, 0xFF34A853, 0xFFF
 @Composable
 fun SettingsScreen(
     settings: DrawerSettings,
-    chosenApps: List<LaunchableApp>,
+    /** Null while the app list is still loading. */
+    chosenApps: List<LaunchableApp>?,
     canDrawOverlays: Boolean,
     notificationsGranted: Boolean,
     usageAccessGranted: Boolean,
@@ -61,6 +67,7 @@ fun SettingsScreen(
     onAlphaChange: (Float) -> Unit,
     onColorChange: (Long) -> Unit,
 ) {
+    val shown = chosenApps.orEmpty()
     Scaffold(topBar = { TopAppBar(title = { Text("Edge Drawer") }) }) { padding ->
         LazyColumn(
             contentPadding = padding,
@@ -117,7 +124,9 @@ fun SettingsScreen(
                 }
             }
             item { SectionTitle("Drawer apps") }
-            if (chosenApps.isEmpty()) {
+            if (chosenApps == null) {
+                item { CircularProgressIndicator(Modifier.padding(horizontal = 16.dp).size(24.dp)) }
+            } else if (chosenApps.isEmpty()) {
                 item {
                     Text(
                         "No apps chosen yet.",
@@ -126,7 +135,7 @@ fun SettingsScreen(
                     )
                 }
             }
-            itemsIndexed(chosenApps, key = { _, app -> app.key.encode() }) { index, app ->
+            itemsIndexed(shown, key = { _, app -> app.key.encode() }) { index, app ->
                 Row(
                     Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -136,7 +145,7 @@ fun SettingsScreen(
                     IconButton(onClick = { onMoveApp(index, index - 1) }, enabled = index > 0) {
                         Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Move up")
                     }
-                    IconButton(onClick = { onMoveApp(index, index + 1) }, enabled = index < chosenApps.lastIndex) {
+                    IconButton(onClick = { onMoveApp(index, index + 1) }, enabled = index < shown.lastIndex) {
                         Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Move down")
                     }
                 }
@@ -233,8 +242,15 @@ private fun SectionTitle(text: String) {
 
 @Composable
 private fun LabeledSlider(label: String, value: Float, range: ClosedFloatingPointRange<Float>, onChange: (Float) -> Unit) {
+    // The thumb follows the finger locally; the setting is saved once, on release.
+    var current by remember(value) { mutableFloatStateOf(value) }
     Column(Modifier.padding(horizontal = 16.dp)) {
         Text(label, style = MaterialTheme.typography.bodyLarge)
-        Slider(value = value.coerceIn(range), onValueChange = onChange, valueRange = range)
+        Slider(
+            value = current.coerceIn(range),
+            onValueChange = { current = it },
+            onValueChangeFinished = { onChange(current) },
+            valueRange = range,
+        )
     }
 }

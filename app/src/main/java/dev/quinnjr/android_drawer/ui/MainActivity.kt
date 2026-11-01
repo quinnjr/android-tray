@@ -63,7 +63,8 @@ class MainActivity : ComponentActivity() {
                     )
                 } else {
                     val byKey = remember(allApps) { allApps.orEmpty().associateBy { it.key } }
-                    val chosenApps = s.apps.mapNotNull { byKey[it] }
+                    // Null until the app list has loaded, so settings doesn't flash "No apps chosen yet".
+                    val chosenApps = if (allApps == null) null else s.apps.mapNotNull { byKey[it] }
                     SettingsScreen(
                         settings = s,
                         chosenApps = chosenApps,
@@ -83,7 +84,9 @@ class MainActivity : ComponentActivity() {
                         onGrantUsageAccess = ::openUsageAccessSettings,
                         onEnabledChange = vm::setEnabled,
                         onEditApps = { picking = true },
-                        onMoveApp = { from, to -> vm.moveApp(chosenApps.map { it.key }, from, to) },
+                        onMoveApp = { from, to ->
+                            chosenApps?.let { shown -> vm.moveApp(shown.mapTo(HashSet()) { it.key }, shown[from].key, to - from) }
+                        },
                         onIconsLockedChange = vm::setIconsLocked,
                         onHeightChange = vm::setHeight,
                         onAlphaChange = vm::setAlpha,

@@ -24,20 +24,21 @@ class RecentApps(private val context: Context) {
         }
     }
 
-    /** Activity resumes and pauses between [since] and [now]. */
-    internal fun history(since: Long, now: Long): UsageHistory {
-        val history = UsageHistory()
-        val events = usage.queryEvents(since, now) ?: return history
+    /** The activity events that matter for recents between [since] and [until], oldest first. */
+    internal fun events(since: Long, until: Long): List<UsageEvent> {
+        val events = usage.queryEvents(since, until) ?: return emptyList()
+        val out = ArrayList<UsageEvent>()
         val event = UsageEvents.Event()
         while (events.getNextEvent(event)) {
-            when (event.eventType) {
-                UsageEvents.Event.ACTIVITY_RESUMED -> history.resumed(event.packageName, event.timeStamp, event.className)
-                UsageEvents.Event.ACTIVITY_PAUSED -> history.paused(event.packageName, event.className)
-                UsageEvents.Event.ACTIVITY_STOPPED -> history.stopped(event.packageName, event.className)
-                UsageEvents.Event.DEVICE_SHUTDOWN, UsageEvents.Event.DEVICE_STARTUP -> history.shutdown()
+            val kind = when (event.eventType) {
+                UsageEvents.Event.ACTIVITY_RESUMED -> UsageEvent.Kind.RESUMED
+                UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED -> UsageEvent.Kind.LEFT
+                UsageEvents.Event.DEVICE_SHUTDOWN, UsageEvents.Event.DEVICE_STARTUP -> UsageEvent.Kind.RESET
+                else -> continue
             }
+            out += UsageEvent(kind, event.packageName, event.className, event.timeStamp)
         }
-        return history
+        return out
     }
 
     /**
@@ -58,6 +59,10 @@ class RecentApps(private val context: Context) {
     private companion object {
         const val SYSTEM_RESOLVER = "android"
     }
+}
+
+internal data class UsageEvent(val kind: Kind, val pkg: String, val className: String?, val time: Long) {
+    enum class Kind { RESUMED, LEFT, RESET }
 }
 
 /**
@@ -87,6 +92,17 @@ internal class UsageHistory {
 
     /** Nothing survives a shutdown or startup on screen, even without its pause being recorded. */
     fun shutdown() = resumed.clear()
+
+    /** Applies [events], which must be oldest first. */
+    fun replay(events: List<UsageEvent>) = apply {
+        for (e in events) {
+            when (e.kind) {
+                UsageEvent.Kind.RESUMED -> resumed(e.pkg, e.time, e.className)
+                UsageEvent.Kind.LEFT -> paused(e.pkg, e.className)
+                UsageEvent.Kind.RESET -> shutdown()
+            }
+        }
+    }
 
     /** The activity last resumed in [pkg], if known. */
     fun lastActivity(pkg: String): String? = lastActivity[pkg]

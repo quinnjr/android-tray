@@ -28,6 +28,23 @@ class VisibleOrderTest {
     }
 
     @Test
+    fun `moving among shown apps skips hidden ones`() {
+        assertEquals(listOf(hidden, b, a), listOf(hidden, a, b).movedAmongShown(setOf(a, b), a, +1))
+    }
+
+    @Test
+    fun `two quick moves both apply`() {
+        val once = listOf(a, b, c).movedAmongShown(setOf(a, b, c), c, -1)
+        assertEquals(listOf(c, a, b), once.movedAmongShown(setOf(a, b, c), c, -1))
+    }
+
+    @Test
+    fun `moving past either end does nothing`() {
+        assertEquals(listOf(a, b), listOf(a, b).movedAmongShown(setOf(a, b), a, -1))
+        assertEquals(listOf(a, b), listOf(a, b).movedAmongShown(setOf(a, b), b, +1))
+    }
+
+    @Test
     fun `apps unpinned meanwhile are not brought back`() {
         assertEquals(listOf(b, a), listOf(a, b).withVisibleOrder(listOf(c, b, a)))
     }

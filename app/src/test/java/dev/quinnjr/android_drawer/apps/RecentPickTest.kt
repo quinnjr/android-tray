@@ -120,6 +120,25 @@ class RecentPickTest {
     }
 
     @Test
+    fun `replayed events match direct calls, older span first`() {
+        val older = listOf(
+            UsageEvent(UsageEvent.Kind.RESUMED, "a", "a.Main", 1L),
+            UsageEvent(UsageEvent.Kind.LEFT, "a", "a.Main", 2L),
+            UsageEvent(UsageEvent.Kind.RESUMED, "crashed", "c.Main", 3L),
+            UsageEvent(UsageEvent.Kind.RESET, "android", null, 4L),
+        )
+        val latest = listOf(
+            UsageEvent(UsageEvent.Kind.RESUMED, "b", "b.Main", 5L),
+            UsageEvent(UsageEvent.Kind.LEFT, "b", "b.Main", 6L),
+            UsageEvent(UsageEvent.Kind.RESUMED, "now", "now.Main", 7L),
+        )
+        val h = UsageHistory().replay(older + latest)
+        assertEquals(listOf("b", "a"), h.pick(launchable = all + "crashed").filter { it != "crashed" })
+        assertEquals(true, "crashed" in h.pick(launchable = all + "crashed"))
+        assertEquals("b.Main", h.lastActivity("b"))
+    }
+
+    @Test
     fun `no history gives nothing`() {
         assertEquals(emptyList<String>(), UsageHistory().pick())
     }

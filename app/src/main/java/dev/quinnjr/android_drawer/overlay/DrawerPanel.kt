@@ -2,7 +2,6 @@ package dev.quinnjr.android_drawer.overlay
 
 import android.graphics.Rect
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.fadeIn
@@ -17,13 +16,13 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -185,7 +184,9 @@ private fun Panel(
     ) {
         Column(Modifier.padding(top = 16.dp)) {
             // Fixed above the scrolling pinned apps, so recents arriving late never shift or hide them.
-            RecentSection(recent.value, onLaunch)
+            // Its space is decided once, when the drawer opens: kept if recents are expected.
+            val showRecents = remember { recent.value == null }
+            if (showRecents) RecentSection(recent.value, onLaunch)
             Box(Modifier.weight(1f)) {
                 if (apps.isEmpty()) {
                     NoApps(onOpenSettings, Modifier.fillMaxSize())
@@ -204,23 +205,28 @@ private fun Panel(
 }
 
 /**
- * Up to two rows of recently used apps and a divider below them. While [recent] is still null
- * the rows' space is held, so nothing jumps when they arrive.
+ * Two rows of recently used apps and a divider below them, always the same height — empty while
+ * [recent] is still null — so nothing below ever moves when they arrive.
  */
 @Composable
 private fun RecentSection(recent: List<LaunchableApp>?, onLaunch: (LaunchableApp, Rect?) -> Unit) {
-    if (recent != null && recent.isEmpty()) return
-    Column(
-        Modifier.padding(horizontal = 8.dp).animateContentSize(),
-        verticalArrangement = Arrangement.spacedBy(CELL_SPACING),
-    ) {
-        if (recent == null) {
-            Spacer(Modifier.height(CELL_HEIGHT * RECENT_ROWS + CELL_SPACING * (RECENT_ROWS - 1)))
-        } else {
-            recent.chunked(COLUMNS).forEach { row ->
-                Row {
-                    row.forEach { app -> AppCell(app, onLaunch, Modifier.weight(1f)) }
-                    repeat(COLUMNS - row.size) { Spacer(Modifier.weight(1f)) }
+    Column(Modifier.padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(CELL_SPACING)) {
+        Box(Modifier.fillMaxWidth().height(CELL_HEIGHT * RECENT_ROWS + CELL_SPACING * (RECENT_ROWS - 1))) {
+            when {
+                recent == null -> Unit
+                recent.isEmpty() -> Text(
+                    "No recent apps",
+                    color = LABEL_COLOR.copy(alpha = 0.6f),
+                    fontSize = 12.sp,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+                else -> Column(verticalArrangement = Arrangement.spacedBy(CELL_SPACING)) {
+                    recent.chunked(COLUMNS).forEach { row ->
+                        Row {
+                            row.forEach { app -> AppCell(app, onLaunch, Modifier.weight(1f)) }
+                            repeat(COLUMNS - row.size) { Spacer(Modifier.weight(1f)) }
+                        }
+                    }
                 }
             }
         }
@@ -249,6 +255,8 @@ private fun PinnedGrid(
     // Finger position in grid coordinates, and where on the icon it grabbed.
     var pointer by remember { mutableStateOf(Offset.Zero) }
     var grab by remember { mutableStateOf(Offset.Zero) }
+    // Auto-scroll only once the lifted app has actually been moved.
+    var moved by remember { mutableStateOf(false) }
 
     fun appAt(position: Offset): LazyGridItemInfo? = gridState.layoutInfo.visibleItemsInfo.firstOrNull {
         position.x >= it.offset.x && position.x < it.offset.x + it.size.width &&
@@ -277,6 +285,7 @@ private fun PinnedGrid(
     LaunchedEffect(dragging != null) {
         while (dragging != null) {
             withFrameNanos { }
+            if (!moved) continue
             val height = gridState.layoutInfo.viewportSize.height
             val delta = when {
                 pointer.y < edgePx -> -AUTOSCROLL_STEP_PX
@@ -296,6 +305,7 @@ private fun PinnedGrid(
                     val info = appAt(start) ?: return@detectDragGesturesAfterLongPress
                     dragging = order[info.index].key
                     pointer = start
+                    moved = false
                     grab = start - info.offset.toOffset()
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 },
@@ -305,6 +315,7 @@ private fun PinnedGrid(
                 if (dragging == null) return@detectDragGesturesAfterLongPress
                 change.consume()
                 pointer = change.position
+                moved = true
                 followPointer()
             }
         }
@@ -314,8 +325,9 @@ private fun PinnedGrid(
         columns = GridCells.Fixed(COLUMNS),
         state = gridState,
         userScrollEnabled = dragging == null,
-        contentPadding = PaddingValues(top = CELL_SPACING, bottom = 16.dp),
-        modifier = Modifier.padding(horizontal = 8.dp).then(reorder),
+        // Plain padding, not contentPadding: the drag hit-testing compares the finger (in this
+        // modifier's coordinates) with item offsets, which contentPadding would shift.
+        modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = CELL_SPACING, bottom = 16.dp).then(reorder),
         verticalArrangement = Arrangement.spacedBy(CELL_SPACING),
     ) {
         items(order, key = { it.key.encode() }) { app ->

@@ -73,21 +73,23 @@ class AppCatalog(context: Context) {
             .groupBy { it.componentName.packageName }
         val excluded = recents.homePackages() + packageName
         val pinnedHere = pinned.filter { it.userSerial == serial }.mapTo(HashSet()) { it.component }
+        fun choose(history: UsageHistory): List<LauncherActivityInfo> = history.pick(excluded, byPackage.keys)
+            .asSequence()
+            .map { pkg ->
+                // Prefer the entry point actually used, for apps with several (e.g. Google and Lens).
+                val entries = byPackage.getValue(pkg)
+                entries.firstOrNull { it.componentName.className == history.lastActivity(pkg) } ?: entries.first()
+            }
+            .filter { it.componentName.flattenToString() !in pinnedHere }
+            .take(limit)
+            .toList()
+
+        // A few hours almost always fill the slots; only read the older span when they don't.
         val now = System.currentTimeMillis()
-        // A few hours almost always fill the slots; only read further back when they don't.
-        var picked = emptyList<LauncherActivityInfo>()
-        for (window in LOOKBACK_WINDOWS_MS) {
-            val history = recents.history(now - window, now)
-            picked = history.pick(excluded, byPackage.keys).asSequence()
-                .map { pkg ->
-                    // Prefer the entry point actually used, for apps with several (e.g. Google and Lens).
-                    val entries = byPackage.getValue(pkg)
-                    entries.firstOrNull { it.componentName.className == history.lastActivity(pkg) } ?: entries.first()
-                }
-                .filter { it.componentName.flattenToString() !in pinnedHere }
-                .take(limit)
-                .toList()
-            if (picked.size >= limit) break
+        val latest = recents.events(now - SHORT_LOOKBACK_MS, now)
+        var picked = choose(UsageHistory().replay(latest))
+        if (picked.size < limit) {
+            picked = choose(UsageHistory().replay(recents.events(now - LONG_LOOKBACK_MS, now - SHORT_LOOKBACK_MS) + latest))
         }
         return picked.map { info -> info.toApp(AppKey(info.componentName.flattenToString(), serial)) }
     }
@@ -124,7 +126,8 @@ class AppCatalog(context: Context) {
         /** How many recent apps the drawer shows. */
         const val RECENT_LIMIT = 4
         private const val TAG = "EdgeDrawer"
-        private val LOOKBACK_WINDOWS_MS = longArrayOf(6L * 60 * 60 * 1000, 3L * 24 * 60 * 60 * 1000)
+        private const val SHORT_LOOKBACK_MS = 6L * 60 * 60 * 1000
+        private const val LONG_LOOKBACK_MS = 3L * 24 * 60 * 60 * 1000
     }
 }
 

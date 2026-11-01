@@ -17,7 +17,7 @@ import dev.quinnjr.android_drawer.apps.toImageBitmap
 @Composable
 fun AppIcon(app: LaunchableApp, modifier: Modifier = Modifier, size: Dp = 40.dp) {
     val sizePx = with(LocalDensity.current) { size.roundToPx() }
-    val bitmap = remember(app.key, app.bitmap, sizePx) {
+    val bitmap = remember(app.key, app.icon, app.bitmap, sizePx) {
         app.bitmap ?: app.icon?.toImageBitmap(sizePx)
     }
     Box(modifier.size(size)) {

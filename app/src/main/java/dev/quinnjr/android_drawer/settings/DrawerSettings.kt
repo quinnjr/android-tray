@@ -35,6 +35,18 @@ data class DrawerSettings(
  * Applies an order chosen in the drawer, which only shows the apps it could resolve. Those apps
  * take each other's slots in [visible] order; the rest (e.g. a paused work profile's) stay put.
  */
+/**
+ * Moves [key] by [delta] places among the [shown] apps, from this (the latest saved) order, so
+ * quick repeated moves each apply; apps not shown keep their place.
+ */
+internal fun List<AppKey>.movedAmongShown(shown: Set<AppKey>, key: AppKey, delta: Int): List<AppKey> {
+    val visible = filter { it in shown }
+    val from = visible.indexOf(key)
+    val to = from + delta
+    if (from < 0 || to !in visible.indices) return this
+    return withVisibleOrder(visible.toMutableList().apply { add(to, removeAt(from)) })
+}
+
 internal fun List<AppKey>.withVisibleOrder(visible: List<AppKey>): List<AppKey> {
     val movable = visible.filter { it in this }.distinct()
     val movableSet = movable.toSet()

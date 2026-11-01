@@ -34,12 +34,14 @@ import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.withVisibleOrder
 import dev.quinnjr.android_drawer.ui.MainActivity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
@@ -61,7 +63,7 @@ class EdgeService : LifecycleService() {
      * Pinned apps resolved ahead of time, icons already drawn, by key; null until the first resolve.
      * The order always comes from settings when the drawer opens, so it can never be stale.
      */
-    private var resolved: Map<AppKey, LaunchableApp>? = null
+    private val resolved = MutableStateFlow<Map<AppKey, LaunchableApp>?>(null)
     /** Pinned keys the last resolve couldn't find (e.g. a paused work profile's apps). */
     private var unresolvable: Set<AppKey> = emptySet()
     /** Display density; icons are re-drawn when it changes (e.g. Display size). */
@@ -129,11 +131,16 @@ class EdgeService : LifecycleService() {
                 appsChanged(this@EdgeService).onStart { emit(Unit) },
                 density,
             ) { keys, _, _ -> keys }
-                .mapLatest { keys -> keys to withContext(Dispatchers.Default) { catalog.resolve(keys.toList()).withBitmaps(iconSizePx()) } }
+                .mapLatest { keys -> keys to resolveWithIcons(keys.toList()) }
                 .collect { (keys, apps) ->
+                    if (apps == null) {
+                        // Failed: keep what we had; with nothing yet, let the drawer resolve on open.
+                        if (resolved.value == null) resolved.value = emptyMap()
+                        return@collect
+                    }
                     val byKey = apps.associateBy { it.key }
-                    resolved = byKey
                     unresolvable = keys - byKey.keys
+                    resolved.value = byKey
                 }
         }
     }
@@ -176,14 +183,30 @@ class EdgeService : LifecycleService() {
         }
     }
 
-    /** [keys] in order, from the cache; any it hasn't resolved yet (e.g. just pinned) are resolved now. */
+    /**
+     * [keys] in order, from the cache (waiting for the first background resolve if needed); any
+     * it hasn't resolved yet (e.g. just pinned) are resolved now.
+     */
     private suspend fun pinnedApps(keys: List<AppKey>): List<LaunchableApp> {
-        val cache = resolved.orEmpty()
+        val cache = resolved.filterNotNull().first()
         val missing = keys.filter { it !in cache && it !in unresolvable }
-        if (missing.isEmpty()) return keys.mapNotNull { cache[it] }
-        val fresh = withContext(Dispatchers.Default) { catalog.resolve(missing).withBitmaps(iconSizePx()) }
-            .associateBy { it.key }
+        val fresh = if (missing.isEmpty()) emptyMap() else resolveWithIcons(missing).orEmpty().associateBy { it.key }
         return keys.mapNotNull { cache[it] ?: fresh[it] }
+    }
+
+    /**
+     * Resolves [keys] with icons drawn, off the main thread. A failure (e.g. a profile removed
+     * mid-resolve) is logged and gives null rather than crashing the service.
+     */
+    private suspend fun resolveWithIcons(keys: List<AppKey>): List<LaunchableApp>? = withContext(Dispatchers.Default) {
+        try {
+            catalog.resolve(keys).withBitmaps(iconSizePx())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not resolve pinned apps", e)
+            null
+        }
     }
 
     private fun onDisplayChanged() {
