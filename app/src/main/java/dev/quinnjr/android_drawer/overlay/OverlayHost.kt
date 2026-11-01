@@ -108,7 +108,7 @@ class OverlayHost(
     fun openDrawer(
         /** The pinned apps; null while they're still loading (the drawer shows meanwhile). */
         apps: State<List<LaunchableApp>?>,
-        hasPinned: Boolean,
+        hasPinned: State<Boolean>,
         recent: State<List<LaunchableApp>?>,
         expectRecents: Boolean,
         onLaunch: (LaunchableApp, Rect?) -> Unit,

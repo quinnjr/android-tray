@@ -115,7 +115,7 @@ fun DrawerPanel(
     /** Whether to show the recents section at all (usage access granted). */
     expectRecents: Boolean,
     /** Whether any apps are pinned, even if none can be shown right now. */
-    hasPinned: Boolean,
+    hasPinned: State<Boolean>,
     side: Side,
     visible: MutableTransitionState<Boolean>,
     iconsLocked: Boolean,
@@ -186,7 +186,7 @@ private fun Panel(
     /** Whether to show the recents section at all (usage access granted). */
     expectRecents: Boolean,
     /** Whether any apps are pinned, even if none can be shown right now. */
-    hasPinned: Boolean,
+    hasPinned: State<Boolean>,
     fromRight: Boolean,
     iconsLocked: Boolean,
     onLaunch: (LaunchableApp, Rect?) -> Unit,
@@ -255,7 +255,7 @@ private fun Panel(
                             color = LABEL_COLOR,
                             modifier = Modifier.align(Alignment.Center).size(32.dp),
                         )
-                        pinned.isEmpty() -> NoApps(hasPinned, onOpenSettings, Modifier.fillMaxSize())
+                        pinned.isEmpty() -> NoApps(hasPinned.value, onOpenSettings, Modifier.fillMaxSize())
                         else -> PinnedGrid(pinned, iconsLocked, onLaunch, onReorder)
                     }
                 }
@@ -306,7 +306,7 @@ private fun RecentSection(recent: List<LaunchableApp>?, rows: Int, onLaunch: (La
  */
 @Composable
 private fun PinnedGrid(
-    apps: List<LaunchableApp>,
+    latest: List<LaunchableApp>,
     iconsLocked: Boolean,
     onLaunch: (LaunchableApp, Rect?) -> Unit,
     onReorder: (List<AppKey>) -> Unit,
@@ -314,10 +314,18 @@ private fun PinnedGrid(
     val gridState = rememberLazyGridState()
     val haptics = LocalHapticFeedback.current
     val edgePx = with(LocalDensity.current) { AUTOSCROLL_EDGE.toPx() }
+    var dragging by remember { mutableStateOf<AppKey?>(null) }
+    // The apps shown: [latest], except that a reload arriving mid-drag waits for the finger to lift
+    // (restarting the gesture would drop the icon and save an order never released on).
+    var apps by remember { mutableStateOf(latest) }
+    LaunchedEffect(latest, dragging) {
+        if (dragging == null) {
+            apps = latest
+        }
+    }
     var order by remember(apps) { mutableStateOf(apps) }
     // The order last handed to onReorder, so a later drag that restores it is saved too.
     var saved by remember(apps) { mutableStateOf(apps) }
-    var dragging by remember { mutableStateOf<AppKey?>(null) }
     // Finger position in grid coordinates, and where on the icon it grabbed.
     var pointer by remember { mutableStateOf(Offset.Zero) }
     var grab by remember { mutableStateOf(Offset.Zero) }
