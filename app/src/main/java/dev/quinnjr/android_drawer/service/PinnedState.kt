@@ -7,6 +7,9 @@ import dev.quinnjr.android_drawer.settings.AppKey
 internal class LoadedPinned<T>(val keys: Set<AppKey>, val apps: Map<AppKey, T>?, val retry: Int) {
     /** These apps in [order] (keys not loaded are left out); null if the load failed. */
     fun ordered(order: List<AppKey>): List<T>? = apps?.let { byKey -> order.mapNotNull(byKey::get) }
+
+    /** Only the apps among [keys] (dropping those unpinned since, and their icons). */
+    fun restrictedTo(keys: Set<AppKey>) = LoadedPinned(this.keys intersect keys, apps?.filterKeys { it in keys }, retry)
 }
 
 /**
@@ -14,12 +17,20 @@ internal class LoadedPinned<T>(val keys: Set<AppKey>, val apps: Map<AppKey, T>?,
  * failed ([failed]) the last good one. The current pinned order is applied to it afterwards, so
  * a kept load always shows the saved order and leaves out apps unpinned since.
  */
-internal data class KeptLoad<T>(val load: LoadedPinned<T>, val reloading: Boolean = false, val failed: Boolean = false)
+internal data class KeptLoad<T>(
+    val load: LoadedPinned<T>,
+    val reloading: Boolean = false,
+    val failed: Boolean = false,
+    /** The retry the latest load (good or failed) was for. */
+    val retry: Int = load.retry,
+)
 
 /** The next kept load, given [next]: a new load, or null when a reload has just started. */
 internal fun <T> KeptLoad<T>?.keep(next: LoadedPinned<T>?): KeptLoad<T>? = when {
     next == null -> this?.copy(reloading = true)
-    next.apps == null && this?.load?.apps != null -> copy(reloading = false, failed = true)
+    // Failed with a good load to keep: keep it (minus apps unpinned since), noting this attempt.
+    next.apps == null && this?.load?.apps != null ->
+        KeptLoad(load.restrictedTo(next.keys), reloading = false, failed = true, retry = next.retry)
     else -> KeptLoad(next, failed = next.apps == null)
 }
 
@@ -29,7 +40,7 @@ internal fun <T> KeptLoad<T>?.keep(next: LoadedPinned<T>?): KeptLoad<T>? = when 
  * is on the way) all count as reloading.
  */
 internal fun <T> KeptLoad<T>.status(keys: Set<AppKey>, retryRequested: Int): PinnedStatus = when {
-    reloading || load.retry < retryRequested -> PinnedStatus.RELOADING
+    reloading || retry < retryRequested -> PinnedStatus.RELOADING
     failed -> PinnedStatus.FAILED
     load.keys != keys -> PinnedStatus.RELOADING
     else -> PinnedStatus.CURRENT

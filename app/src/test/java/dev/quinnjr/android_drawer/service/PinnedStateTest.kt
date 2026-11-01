@@ -33,7 +33,7 @@ class PinnedStateTest {
     fun `a failed reload keeps the last load, marked failed and no longer reloading`() {
         val good = null.keep(load(a, b)).keep(null)
         val failed = good.keep(load(a, b, failed = true))!!
-        assertEquals(good!!.load, failed.load)
+        assertEquals(good!!.load.apps, failed.load.apps)
         assertTrue(failed.failed)
         assertFalse(failed.reloading)
     }
@@ -67,5 +67,18 @@ class PinnedStateTest {
         assertEquals(300L, inputs.settleDelay(now = 1_200L, settleMs = 500L))
         assertEquals(0L, inputs.settleDelay(now = 2_000L, settleMs = 500L))
         assertEquals(0L, LoadInputs(setOf(a), changedAt = 0L, trigger = null).settleDelay(now = 100L, settleMs = 500L))
+    }
+
+    @Test
+    fun `a failed retry over a kept load counts as that retry, so it shows as failed`() {
+        val kept = null.keep(load(a, b)).keep(load(a, b, failed = true))
+        val retriedAndFailed = kept.keep(null).keep(load(a, b, failed = true, retry = 1))!!
+        assertEquals(PinnedStatus.FAILED, retriedAndFailed.status(setOf(a, b), retryRequested = 1))
+    }
+
+    @Test
+    fun `a failure kept through a change of the pinned set drops the apps unpinned since`() {
+        val kept = null.keep(load(a, b, c)).keep(load(a, failed = true))!!
+        assertEquals(setOf(a), kept.load.apps!!.keys)
     }
 }

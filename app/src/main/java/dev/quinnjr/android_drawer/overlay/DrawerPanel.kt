@@ -267,8 +267,9 @@ private fun Panel(
                         pinned.isEmpty() -> NoApps(hasPinned.value, onOpenSettings, Modifier.fillMaxSize())
                         else -> {
                             // Stays composed while reloading (the last list is kept), so a press or
-                            // drag under way and the scroll position survive. Taps launch at once: an
-                            // app gone meanwhile just isn't started. The status shows as a hint.
+                            // drag under way and the scroll position survive (unless the list turns
+                            // out empty: then there's nothing left to drag). Taps launch at once: an
+                            // app gone meanwhile isn't started and says so. The status shows as a hint.
                             PinnedGrid(pinned, iconsLocked, onLaunch, onReorder)
                             when (current) {
                                 PinnedStatus.RELOADING -> CircularProgressIndicator(
@@ -388,7 +389,8 @@ private fun PinnedGrid(
     fun finishDrag() {
         val keys = drag.order
         if (drag.key != null && drag.moved && keys != null) {
-            val chosen = currentLatest.arrangedBy(keys) { it.key }.map { it.key }.filter { it in drag.members }
+            val members = drag.start.toSet()
+            val chosen = currentLatest.arrangedBy(keys) { it.key }.map { it.key }.filter { it in members }
             // Moved and moved back: nothing to save.
             if (chosen != drag.start.filter { it in chosen }) {
                 currentOnReorder(chosen)
@@ -484,17 +486,16 @@ private class GridDrag {
     var order by mutableStateOf<List<AppKey>?>(null)
     /** Whether the user has moved anything (a long-press and release alone saves nothing). */
     var moved = false
-    /** The apps there when the drag began: only their order is saved (one pinned meanwhile keeps its place). */
-    var members: Set<AppKey> = emptySet()
-        private set
-    /** Their order when the drag began. */
+    /**
+     * The apps there when the drag began, in their order then: only their order is saved (one
+     * pinned meanwhile keeps its place).
+     */
     var start: List<AppKey> = emptyList()
         private set
 
     fun begin(key: AppKey, apps: List<LaunchableApp>) {
         order = apps.map { it.key }
         start = apps.map { it.key }
-        members = start.toHashSet()
         moved = false
         this.key = key
     }
