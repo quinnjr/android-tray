@@ -36,6 +36,8 @@ import dev.quinnjr.android_drawer.settings.withVisibleOrder
 import dev.quinnjr.android_drawer.ui.MainActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -55,12 +57,17 @@ class EdgeService : LifecycleService() {
     private lateinit var overlayContext: Context
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /** Drawer contents, resolved ahead of time; null until the first resolve finishes. */
-    private var drawerApps: List<LaunchableApp>? = null
-    private var drawerKeys: List<AppKey>? = null
+    /**
+     * Pinned apps resolved ahead of time, icons already drawn, by key; null until the first resolve.
+     * The order always comes from settings when the drawer opens, so it can never be stale.
+     */
+    private var resolved: Map<AppKey, LaunchableApp>? = null
+    /** Pinned keys the last resolve couldn't find (e.g. a paused work profile's apps). */
+    private var unresolvable: Set<AppKey> = emptySet()
+    /** Display density; icons are re-drawn when it changes (e.g. Display size). */
+    private val density = MutableStateFlow(0f)
     private var opening = false
-    /** An order saved from the drawer that the settings flow hasn't caught up with yet. */
-    private var pendingKeys: List<AppKey>? = null
+    private var recentJob: Job? = null
     private var foreground = false
     private var retryScheduled = false
 
@@ -71,7 +78,7 @@ class EdgeService : LifecycleService() {
     }
 
     private val configCallbacks = object : ComponentCallbacks {
-        override fun onConfigurationChanged(newConfig: Configuration) = host.relayout()
+        override fun onConfigurationChanged(newConfig: Configuration) = onDisplayChanged()
 
         @Deprecated("Deprecated in Java")
         override fun onLowMemory() = Unit
@@ -95,6 +102,7 @@ class EdgeService : LifecycleService() {
             onFatal = ::stopSelf,
         )
         if (overlayContext !== this) overlayContext.registerComponentCallbacks(configCallbacks)
+        density.value = overlayContext.resources.displayMetrics.density
         appOps.startWatchingMode(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, packageName, overlayPermissionListener)
         lifecycleScope.launch {
             repo.settings.collect { s ->
@@ -113,19 +121,19 @@ class EdgeService : LifecycleService() {
                 }
             }
         }
-        // Resolve icons off the main thread ahead of time so the drawer opens instantly.
+        // Resolve icons off the main thread ahead of time so the drawer opens instantly. Keyed by
+        // the set of pinned apps: reordering needs no new resolve.
         lifecycleScope.launch {
             combine(
-                repo.settings.map { it.apps }.distinctUntilChanged(),
+                repo.settings.map { it.apps.toSet() }.distinctUntilChanged(),
                 appsChanged(this@EdgeService).onStart { emit(Unit) },
-            ) { keys, _ -> keys }
-                .mapLatest { keys -> keys to withContext(Dispatchers.Default) { catalog.resolve(keys).withBitmaps(iconSizePx()) } }
+                density,
+            ) { keys, _, _ -> keys }
+                .mapLatest { keys -> keys to withContext(Dispatchers.Default) { catalog.resolve(keys.toList()).withBitmaps(iconSizePx()) } }
                 .collect { (keys, apps) ->
-                    // A resolve that started before a drawer reorder would put the old order back.
-                    val pending = pendingKeys
-                    if (pending != null && keys != pending) return@collect
-                    drawerKeys = keys
-                    drawerApps = apps
+                    val byKey = apps.associateBy { it.key }
+                    resolved = byKey
+                    unresolvable = keys - byKey.keys
                 }
         }
     }
@@ -134,67 +142,60 @@ class EdgeService : LifecycleService() {
         // Further swipes while the drawer is being prepared would only redo the same work.
         if (opening || host.isDrawerOpen) return
         opening = true
+        // Recents depend on what was just used, so they're read on every open and fill in when
+        // ready; until then the drawer keeps their space if it expects any.
+        val recent = mutableStateOf<List<LaunchableApp>?>(if (recents.hasAccess()) null else emptyList())
         lifecycleScope.launch {
+            val keys: List<AppKey>
             try {
-                showDrawer()
+                keys = repo.settings.first().apps
+                host.openDrawer(
+                    apps = pinnedApps(keys),
+                    recent = recent,
+                    onLaunch = { app, bounds -> catalog.launch(app, bounds) },
+                    onReorder = { shownOrder ->
+                        lifecycleScope.launch { repo.update { it.copy(apps = it.apps.withVisibleOrder(shownOrder)) } }
+                    },
+                    onOpenSettings = {
+                        startActivity(Intent(this@EdgeService, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    },
+                )
             } finally {
                 opening = false
             }
-        }
-    }
-
-    private suspend fun showDrawer() {
-        val pinnedKeys = drawerKeys ?: repo.settings.first().apps
-        // Opened before the first resolve finished: resolve now rather than show "No apps yet".
-        val apps = drawerApps ?: withContext(Dispatchers.Default) { catalog.resolve(pinnedKeys).withBitmaps(iconSizePx()) }
-        val recent = mutableStateOf(emptyList<LaunchableApp>())
-        host.openDrawer(
-            apps = apps,
-            recent = recent,
-            onLaunch = { app, bounds -> catalog.launch(app, bounds) },
-            onReorder = ::saveDrawerOrder,
-            onOpenSettings = {
-                startActivity(Intent(this@EdgeService, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            },
-        )
-        // Recents depend on what was just used, so they're read on every open and slot in when ready.
-        recent.value = withContext(Dispatchers.Default) {
-            val start = SystemClock.elapsedRealtime()
-            runCatching { catalog.recent(pinnedKeys, recents).withBitmaps(iconSizePx()) }
-                .onFailure { Log.w(TAG, "Could not read recent apps", it) }
-                .getOrDefault(emptyList())
-                .also { Log.d(TAG, "Recent apps read in ${SystemClock.elapsedRealtime() - start} ms") }
-        }
-    }
-
-    /**
-     * Saves an order chosen in the drawer, and applies it to the cached drawer contents at once so
-     * a drawer reopened before the save lands doesn't show (and then re-save) the old order.
-     */
-    private fun saveDrawerOrder(visibleOrder: List<AppKey>) {
-        val keys = drawerKeys
-        val shown = drawerApps
-        if (keys != null && shown != null) {
-            val reordered = keys.withVisibleOrder(visibleOrder)
-            val byKey = shown.associateBy { it.key }
-            drawerKeys = reordered
-            drawerApps = reordered.mapNotNull { byKey[it] }
-            pendingKeys = reordered
-        }
-        lifecycleScope.launch {
-            try {
-                repo.update { it.copy(apps = it.apps.withVisibleOrder(visibleOrder)) }
-            } finally {
-                pendingKeys = null
+            recentJob?.cancel()
+            recentJob = lifecycleScope.launch {
+                recent.value = withContext(Dispatchers.Default) {
+                    val start = SystemClock.elapsedRealtime()
+                    runCatching { catalog.recent(keys, recents).withBitmaps(iconSizePx()) }
+                        .onFailure { Log.w(TAG, "Could not read recent apps", it) }
+                        .getOrDefault(emptyList())
+                        .also { Log.d(TAG, "Recent apps read in ${SystemClock.elapsedRealtime() - start} ms") }
+                }
             }
         }
+    }
+
+    /** [keys] in order, from the cache; any it hasn't resolved yet (e.g. just pinned) are resolved now. */
+    private suspend fun pinnedApps(keys: List<AppKey>): List<LaunchableApp> {
+        val cache = resolved.orEmpty()
+        val missing = keys.filter { it !in cache && it !in unresolvable }
+        if (missing.isEmpty()) return keys.mapNotNull { cache[it] }
+        val fresh = withContext(Dispatchers.Default) { catalog.resolve(missing).withBitmaps(iconSizePx()) }
+            .associateBy { it.key }
+        return keys.mapNotNull { cache[it] ?: fresh[it] }
+    }
+
+    private fun onDisplayChanged() {
+        host.relayout()
+        density.value = overlayContext.resources.displayMetrics.density
     }
 
     private fun iconSizePx(): Int = (DRAWER_ICON_SIZE.value * overlayContext.resources.displayMetrics.density).roundToInt()
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        if (overlayContext === this) host.relayout()
+        if (overlayContext === this) onDisplayChanged()
     }
 
     override fun onDestroy() {

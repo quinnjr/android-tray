@@ -32,8 +32,8 @@ class RecentApps(private val context: Context) {
         while (events.getNextEvent(event)) {
             when (event.eventType) {
                 UsageEvents.Event.ACTIVITY_RESUMED -> history.resumed(event.packageName, event.timeStamp, event.className)
-                UsageEvents.Event.ACTIVITY_PAUSED -> history.paused(event.packageName)
-                UsageEvents.Event.ACTIVITY_STOPPED -> history.stopped(event.packageName)
+                UsageEvents.Event.ACTIVITY_PAUSED -> history.paused(event.packageName, event.className)
+                UsageEvents.Event.ACTIVITY_STOPPED -> history.stopped(event.packageName, event.className)
                 UsageEvents.Event.DEVICE_SHUTDOWN, UsageEvents.Event.DEVICE_STARTUP -> history.shutdown()
             }
         }
@@ -61,27 +61,29 @@ class RecentApps(private val context: Context) {
 }
 
 /**
- * Each app's latest use and the activity used, plus which apps are still on screen (resumed and
- * not yet paused) — the app the drawer was opened over, or both halves of a split screen.
+ * Each app's latest use and the activity used, plus which apps are still on screen — the app the
+ * drawer was opened over, or both halves of a split screen. On-screen state is kept per activity:
+ * opening a sub-screen resumes the new activity before the old one stops.
  */
 internal class UsageHistory {
     private val lastUsed = HashMap<String, Long>()
     private val lastActivity = HashMap<String, String>()
-    private val resumed = HashSet<String>()
+    /** Resumed, not yet paused or stopped activities, by (package, class), with their resume time. */
+    private val resumed = HashMap<Pair<String, String>, Long>()
 
     fun resumed(pkg: String, time: Long, className: String? = null) {
         if (time >= (lastUsed[pkg] ?: Long.MIN_VALUE)) {
             lastUsed[pkg] = time
             if (className != null) lastActivity[pkg] = className
         }
-        resumed += pkg
+        resumed[pkg to className.orEmpty()] = time
     }
 
-    fun paused(pkg: String) {
-        resumed -= pkg
+    fun paused(pkg: String, className: String? = null) {
+        resumed.remove(pkg to className.orEmpty())
     }
 
-    fun stopped(pkg: String) = paused(pkg)
+    fun stopped(pkg: String, className: String? = null) = paused(pkg, className)
 
     /** Nothing survives a shutdown or startup on screen, even without its pause being recorded. */
     fun shutdown() = resumed.clear()
@@ -93,11 +95,15 @@ internal class UsageHistory {
      * At most two apps (split screen) are really on screen; an older app still marked resumed
      * just never had its pause recorded (e.g. it crashed).
      */
-    private fun onScreen(): Set<String> =
-        resumed.sortedByDescending { lastUsed[it] ?: Long.MIN_VALUE }.take(MAX_ON_SCREEN).toSet()
+    private fun onScreen(): Set<String> = resumed.entries
+        .sortedByDescending { it.value }
+        .map { it.key.first }
+        .distinct()
+        .take(MAX_ON_SCREEN)
+        .toSet()
 
-    /** Up to [limit] packages, newest first, skipping on-screen, [excluded] and non-[launchable] ones. */
-    fun pick(excluded: Set<String>, launchable: Set<String>, limit: Int): List<String> {
+    /** Packages newest first, skipping on-screen, [excluded] and non-[launchable] ones. */
+    fun pick(excluded: Set<String>, launchable: Set<String>, limit: Int = Int.MAX_VALUE): List<String> {
         val onScreen = onScreen()
         return lastUsed.entries
             .filter { (pkg, _) -> pkg !in onScreen && pkg !in excluded && pkg in launchable }

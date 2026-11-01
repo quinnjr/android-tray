@@ -36,9 +36,15 @@ data class LaunchableApp(
     val bitmap: ImageBitmap? = null,
 )
 
-/** Pre-renders each app's icon at [sizePx]; call off the main thread. */
+/** Draws an icon at [sizePx] square. */
+fun Drawable.toImageBitmap(sizePx: Int): ImageBitmap = toBitmap(sizePx, sizePx).asImageBitmap()
+
+/**
+ * Pre-renders each app's icon at [sizePx] and drops the drawable, which the long-running service
+ * would otherwise keep alongside it. Call off the main thread.
+ */
 fun List<LaunchableApp>.withBitmaps(sizePx: Int): List<LaunchableApp> =
-    map { app -> app.copy(bitmap = app.icon?.toBitmap(sizePx, sizePx)?.asImageBitmap()) }
+    map { app -> app.copy(bitmap = app.icon?.toImageBitmap(sizePx), icon = null) }
 
 class AppCatalog(context: Context) {
     private val packageName = context.packageName
@@ -65,20 +71,25 @@ class AppCatalog(context: Context) {
         val byPackage = runCatching { launcherApps.getActivityList(null, me) }
             .getOrDefault(emptyList())
             .groupBy { it.componentName.packageName }
-        val excluded = buildSet {
-            add(packageName)
-            addAll(recents.homePackages())
-            pinned.filter { it.userSerial == serial }.forEach { add(it.component.substringBefore('/')) }
-        }
+        val excluded = recents.homePackages() + packageName
+        val pinnedHere = pinned.filter { it.userSerial == serial }.mapTo(HashSet()) { it.component }
         val now = System.currentTimeMillis()
-        val history = recents.history(now - LOOKBACK_MS, now)
-        return history.pick(excluded, byPackage.keys, limit).map { pkg ->
-            // Prefer the entry point actually used, for apps with several (e.g. Google and Lens).
-            val entries = byPackage.getValue(pkg)
-            val used = history.lastActivity(pkg)
-            val info = entries.firstOrNull { it.componentName.className == used } ?: entries.first()
-            info.toApp(AppKey(info.componentName.flattenToString(), serial))
+        // A few hours almost always fill the slots; only read further back when they don't.
+        var picked = emptyList<LauncherActivityInfo>()
+        for (window in LOOKBACK_WINDOWS_MS) {
+            val history = recents.history(now - window, now)
+            picked = history.pick(excluded, byPackage.keys).asSequence()
+                .map { pkg ->
+                    // Prefer the entry point actually used, for apps with several (e.g. Google and Lens).
+                    val entries = byPackage.getValue(pkg)
+                    entries.firstOrNull { it.componentName.className == history.lastActivity(pkg) } ?: entries.first()
+                }
+                .filter { it.componentName.flattenToString() !in pinnedHere }
+                .take(limit)
+                .toList()
+            if (picked.size >= limit) break
         }
+        return picked.map { info -> info.toApp(AppKey(info.componentName.flattenToString(), serial)) }
     }
 
     private fun activities(): List<Pair<AppKey, LauncherActivityInfo>> = launcherApps.profiles
@@ -113,7 +124,7 @@ class AppCatalog(context: Context) {
         /** How many recent apps the drawer shows. */
         const val RECENT_LIMIT = 4
         private const val TAG = "EdgeDrawer"
-        private const val LOOKBACK_MS = 3L * 24 * 60 * 60 * 1000
+        private val LOOKBACK_WINDOWS_MS = longArrayOf(6L * 60 * 60 * 1000, 3L * 24 * 60 * 60 * 1000)
     }
 }
 

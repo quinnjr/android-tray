@@ -84,7 +84,7 @@ class OverlayHost(
 
     fun openDrawer(
         apps: List<LaunchableApp>,
-        recent: State<List<LaunchableApp>>,
+        recent: State<List<LaunchableApp>?>,
         onLaunch: (LaunchableApp, Rect?) -> Unit,
         onReorder: (List<AppKey>) -> Unit,
         onOpenSettings: () -> Unit,

@@ -81,6 +81,17 @@ class RecentPickTest {
     }
 
     @Test
+    fun `app stays on screen when one of its activities stops after another resumed`() {
+        // Opening a sub-screen: A pauses, B resumes, then A stops.
+        val h = UsageHistory().apply {
+            resumed("a", 1L, "a.Old"); paused("a", "a.Old")
+            resumed("now", 2L, "now.Main"); paused("now", "now.Main")
+            resumed("now", 3L, "now.Sub"); stopped("now", "now.Main")
+        }
+        assertEquals(listOf("a"), h.pick())
+    }
+
+    @Test
     fun `remembers the activity last used in each app`() {
         val h = UsageHistory().apply {
             resumed("a", 1L, "a.Main"); paused("a")
