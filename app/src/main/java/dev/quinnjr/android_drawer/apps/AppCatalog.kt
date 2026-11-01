@@ -63,8 +63,9 @@ class AppCatalog(context: Context) {
     private val userManager = context.getSystemService(UserManager::class.java)
 
     /** Every launchable activity across available profiles, sorted by label. */
-    fun allApps(): List<LaunchableApp> = activities()
-        .map { (key, info) -> info.toApp(key) }
+    /** Every launchable app, sorted by label; apps [cached] already has aren't loaded again. */
+    fun allApps(cached: (AppKey) -> LaunchableApp? = { null }): List<LaunchableApp> = activities()
+        .map { (key, info) -> cached(key) ?: info.toApp(key) }
         .sortedBy { it.label.lowercase() }
 
     /**

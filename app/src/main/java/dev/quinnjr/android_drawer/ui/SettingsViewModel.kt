@@ -1,22 +1,21 @@
 package dev.quinnjr.android_drawer.ui
 
 import android.app.Application
+import android.content.res.Configuration
 import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.quinnjr.android_drawer.apps.AppCatalog
-import dev.quinnjr.android_drawer.apps.IconCache
+import dev.quinnjr.android_drawer.apps.DrawConfig
+import dev.quinnjr.android_drawer.apps.DrawnAppCache
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.appChanges
-import dev.quinnjr.android_drawer.apps.isIn
-import dev.quinnjr.android_drawer.apps.withBitmap
 import dev.quinnjr.android_drawer.overlay.clampHandleHeightDp
 import dev.quinnjr.android_drawer.service.EdgeService
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.movedAmongShown
-import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.currentCoroutineContext
@@ -25,11 +24,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -37,13 +37,11 @@ import kotlinx.coroutines.launch
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = SettingsRepository(app)
     private val catalog = AppCatalog(app)
-    /** Apps with icons drawn at [iconCacheSizePx], kept across reloads of the list. */
-    private val icons = IconCache<AppKey, LaunchableApp>()
-    /** Only read and written in the (sequential) allApps pipeline. */
-    @Volatile private var iconCacheSizePx = 0
+    /** Apps with icons drawn, kept across reloads of the list. */
+    private val icons = DrawnAppCache()
 
-    /** Follows the activity's density (it survives Display size changes; this ViewModel doesn't need to). */
-    private val iconSizePx = MutableStateFlow(0)
+    /** Follows the activity's configuration (it is recreated on changes; this ViewModel isn't). */
+    private val drawConfig = MutableStateFlow<DrawConfig?>(null)
 
     val settings: StateFlow<DrawerSettings?> =
         repo.settings.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -51,29 +49,27 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     /** All launchable apps; null while loading. */
     val allApps: StateFlow<List<LaunchableApp>?> = combine(
         // A changed app loses its drawn icon at once; a burst of updates reloads the list once.
-        appChanges(app, onChange = { pkg -> if (pkg == null) icons.clear() else icons.forget { it.isIn(pkg) } }),
-        iconSizePx.filter { it > 0 },
-    ) { _, px -> px }
+        // App changes aren't watched while nobody is subscribed, so a new subscription starts afresh.
+        appChanges(app, onChange = icons::onAppChanged).onStart { icons.clear() },
+        drawConfig.filterNotNull(),
+    ) { _, config -> config }
         // Icons drawn here, off the main thread, rather than while the list scrolls; only apps
-        // without a drawn icon are drawn, and a newer change cancels the drawing in progress.
-        .mapLatest { px ->
-            if (px != iconCacheSizePx) {
-                icons.clear()
-                iconCacheSizePx = px
-            }
+        // without a drawn icon are loaded and drawn, and a newer change cancels the work in progress.
+        .mapLatest { config ->
+            icons.use(config)
             // Taken before reading the apps, so an icon of an app that changes meanwhile isn't kept.
             val generation = icons.generation()
-            catalog.allApps().map { app ->
+            catalog.allApps(cached = { icons[it] }).map { app ->
                 currentCoroutineContext().ensureActive()
-                icons[app.key] ?: app.withBitmap(px).also { icons.put(app.key, it, generation) }
+                icons.draw(app, config.iconSizePx, generation)
             }
         }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    /** Call from the activity on creation (including after a Display size change). */
-    fun setDensity(density: Float) {
-        iconSizePx.value = (SETTINGS_ICON_SIZE.value * density).roundToInt()
+    /** Call from the activity on creation (including after a configuration change). */
+    fun setConfiguration(configuration: Configuration) {
+        drawConfig.value = DrawConfig.of(configuration, SETTINGS_ICON_SIZE)
     }
 
     fun setEnabled(enabled: Boolean) = viewModelScope.launch {

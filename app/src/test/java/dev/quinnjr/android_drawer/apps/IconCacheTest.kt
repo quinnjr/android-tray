@@ -42,4 +42,22 @@ class IconCacheTest {
         assertEquals("A", cache["a"])
         assertEquals("C", cache["c"])
     }
+
+    @Test
+    fun `forgetting one key doesn't reject values for other keys drawn meanwhile`() {
+        val cache = IconCache<String, String>()
+        val generation = cache.generation()
+        cache.forget { it == "a" }
+        cache.put("b", "B", generation)
+        assertEquals("B", cache["b"])
+    }
+
+    @Test
+    fun `a value drawn before a clear is not stored after it`() {
+        val cache = IconCache<String, String>()
+        val generation = cache.generation()
+        cache.clear()
+        cache.put("b", "stale", generation)
+        assertNull(cache["b"])
+    }
 }

@@ -29,4 +29,10 @@ class DrawerSettingsTest {
         assertEquals(listOf(b, a), decodeApps("${b.encode()}\ngarbage\n\n${a.encode()}"))
         assertEquals(emptyList<AppKey>(), decodeApps(""))
     }
+
+    @Test
+    fun `apps list decoding drops duplicates`() {
+        val a = AppKey("a.pkg/a.pkg.A", 0L)
+        assertEquals(listOf(a), decodeApps("${a.encode()}\n${a.encode()}"))
+    }
 }

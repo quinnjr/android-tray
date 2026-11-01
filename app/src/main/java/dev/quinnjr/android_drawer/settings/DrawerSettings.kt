@@ -57,9 +57,11 @@ internal fun List<AppKey>.withVisibleOrder(visible: List<AppKey>): List<AppKey> 
     val movable = visible.filter { it in this }.distinct()
     val movableSet = movable.toSet()
     val next = movable.iterator()
-    return map { if (it in movableSet) next.next() else it }
+    // hasNext(): a duplicated key (which decodeApps already drops) mustn't exhaust the iterator.
+    return map { if (it in movableSet && next.hasNext()) next.next() else it }
 }
 
 internal fun encodeApps(apps: List<AppKey>): String = apps.joinToString("\n") { it.encode() }
 
-internal fun decodeApps(s: String): List<AppKey> = s.lineSequence().mapNotNull(AppKey::decode).toList()
+/** Duplicates (e.g. from a restored or hand-edited file) are dropped: every list relies on unique keys. */
+internal fun decodeApps(s: String): List<AppKey> = s.lineSequence().mapNotNull(AppKey::decode).distinct().toList()

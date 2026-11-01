@@ -18,7 +18,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
-import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
 import android.view.WindowManager
@@ -29,11 +28,11 @@ import androidx.lifecycle.lifecycleScope
 import dev.quinnjr.android_drawer.R
 import dev.quinnjr.android_drawer.TAG
 import dev.quinnjr.android_drawer.apps.AppCatalog
-import dev.quinnjr.android_drawer.apps.IconCache
+import dev.quinnjr.android_drawer.apps.DrawConfig
+import dev.quinnjr.android_drawer.apps.DrawnAppCache
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.RecentApps
 import dev.quinnjr.android_drawer.apps.appChanges
-import dev.quinnjr.android_drawer.apps.isIn
 import dev.quinnjr.android_drawer.apps.withBitmap
 import dev.quinnjr.android_drawer.overlay.DRAWER_ICON_SIZE
 import dev.quinnjr.android_drawer.overlay.OverlayHost
@@ -78,11 +77,13 @@ class EdgeService : LifecycleService() {
     private var unresolvable: Set<AppKey> = emptySet()
     private var unresolvableSince = 0L
     /** What app labels and icons depend on; they're reloaded when it changes. */
-    private val displayConfig = MutableStateFlow<DisplayConfig?>(null)
+    private val displayConfig = MutableStateFlow<DrawConfig?>(null)
     private var opening = false
     private var recentJob: Job? = null
+    /** The drawer being prepared (resolving pinned apps) before it is shown. */
+    private var openJob: Job? = null
     /** Recent apps with icons already drawn, so reopening the drawer doesn't redraw them. */
-    private val recentIcons = IconCache<AppKey, LaunchableApp>(MAX_RECENT_ICONS)
+    private val recentIcons = DrawnAppCache(MAX_RECENT_ICONS)
     /** Packages of pinned apps: changes to other apps don't need the pinned apps re-resolved. */
     @Volatile private var pinnedPackages: Set<String> = emptySet()
     /** True while the background resolve is working on a newer set of pinned apps. */
@@ -106,7 +107,10 @@ class EdgeService : LifecycleService() {
     private val closeDrawerReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             Log.d(TAG, "Closing drawer: ${intent.action} ${intent.getStringExtra(EXTRA_CLOSE_REASON).orEmpty()}")
-            host.closeDrawer()
+            // A drawer still being prepared must not appear after this.
+            openJob?.cancel()
+            // With the screen off no frames run, so an exit animation would only play on unlock.
+            if (intent.action == Intent.ACTION_SCREEN_OFF) host.removeDrawerNow() else host.closeDrawer()
         }
     }
 
@@ -135,7 +139,8 @@ class EdgeService : LifecycleService() {
             onFatal = ::stopSelf,
         )
         if (overlayContext !== this) overlayContext.registerComponentCallbacks(configCallbacks)
-        displayConfig.value = DisplayConfig.of(overlayContext.resources.configuration)
+        displayConfig.value = DrawConfig.of(overlayContext.resources.configuration, DRAWER_ICON_SIZE)
+            .also(recentIcons::use)
         appOps.startWatchingMode(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, packageName, overlayPermissionListener)
         @Suppress("DEPRECATION") // Still delivered for Home/Recents; only sending it is restricted.
         val closeActions = IntentFilter(Intent.ACTION_SCREEN_OFF).apply { addAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS) }
@@ -173,7 +178,7 @@ class EdgeService : LifecycleService() {
                     relevant = { pkg -> pkg == null || pkg in pinnedPackages },
                     onChange = { pkg ->
                         catalog.invalidate()
-                        if (pkg == null) recentIcons.clear() else recentIcons.forget { it.isIn(pkg) }
+                        recentIcons.onAppChanged(pkg)
                     },
                 ),
                 displayConfig,
@@ -203,7 +208,7 @@ class EdgeService : LifecycleService() {
         // ready; until then the drawer keeps their space if it expects any.
         val expectRecents = recents.hasAccess()
         val recent = mutableStateOf<List<LaunchableApp>?>(null)
-        lifecycleScope.launch {
+        openJob = lifecycleScope.launch {
             val keys: List<AppKey>
             try {
                 keys = repo.settings.first().apps
@@ -233,7 +238,7 @@ class EdgeService : LifecycleService() {
                     val generation = recentIcons.generation()
                     try {
                         catalog.recent(keys, recents, cached = { recentIcons[it] })
-                            .map { ensureActive(); withRecentIcon(it, generation) }
+                            .map { ensureActive(); recentIcons.draw(it, iconSizePx(), generation) }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -287,40 +292,19 @@ class EdgeService : LifecycleService() {
         }
     }
 
-    /** [app] with its icon drawn, kept for later opens unless the cache was invalidated since [generation]. */
-    private fun withRecentIcon(app: LaunchableApp, generation: Int): LaunchableApp {
-        if (app.bitmap != null) return app
-        return app.withBitmap(iconSizePx()).also { recentIcons.put(app.key, it, generation) }
-    }
-
     /**
      * Read from the [Configuration] passed in rather than the overlay context's resources: on
      * Android 11 those callbacks arrive before (or without) the window context's resources updating.
      */
     private fun onDisplayChanged(newConfig: Configuration) {
         host.relayout()
-        val config = DisplayConfig.of(newConfig)
-        if (config != displayConfig.value) {
-            recentIcons.clear()
-            displayConfig.value = config
-        }
+        val config = DrawConfig.of(newConfig, DRAWER_ICON_SIZE)
+        recentIcons.use(config)
+        displayConfig.value = config
     }
 
-    /** Density (icon size), language (labels) and dark mode (themed icons). */
-    private data class DisplayConfig(val density: Float, val locales: String, val nightMode: Int) {
-        companion object {
-            fun of(c: Configuration) = DisplayConfig(
-                density = c.densityDpi.toFloat() / DisplayMetrics.DENSITY_DEFAULT,
-                locales = c.locales.toLanguageTags(),
-                nightMode = c.uiMode and Configuration.UI_MODE_NIGHT_MASK,
-            )
-        }
-    }
-
-    private fun iconSizePx(): Int {
-        val density = displayConfig.value?.density ?: overlayContext.resources.displayMetrics.density
-        return (DRAWER_ICON_SIZE.value * density).roundToInt()
-    }
+    private fun iconSizePx(): Int = displayConfig.value?.iconSizePx
+        ?: (DRAWER_ICON_SIZE.value * overlayContext.resources.displayMetrics.density).roundToInt()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.getBooleanExtra(EXTRA_FOREGROUND_REQUIRED, false) == true) {

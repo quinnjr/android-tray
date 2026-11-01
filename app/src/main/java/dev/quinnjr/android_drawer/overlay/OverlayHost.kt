@@ -145,6 +145,9 @@ class OverlayHost(
         })
     }
 
+    /** Removes the drawer at once, without the exit animation (e.g. when the screen turns off). */
+    fun removeDrawerNow() = removeDrawer()
+
     /** Starts the exit animation; the window is removed when it finishes. */
     fun closeDrawer() {
         drawerState?.targetState = false

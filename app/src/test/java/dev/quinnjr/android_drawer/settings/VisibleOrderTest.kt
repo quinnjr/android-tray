@@ -52,4 +52,9 @@ class VisibleOrderTest {
     fun `apps pinned meanwhile are kept`() {
         assertEquals(listOf(b, a, c), listOf(a, b, c).withVisibleOrder(listOf(b, a)))
     }
+
+    @Test
+    fun `a duplicated key does not break reordering`() {
+        assertEquals(listOf(b, a, a), listOf(a, b, a).withVisibleOrder(listOf(b, a)))
+    }
 }
