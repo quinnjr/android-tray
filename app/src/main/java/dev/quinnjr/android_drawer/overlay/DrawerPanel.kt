@@ -255,8 +255,17 @@ private fun Panel(
                     }
                 }
                 Box(Modifier.weight(1f)) {
+                    // A pinned app tapped while the list was reloading, launched once it's done.
+                    var queuedLaunch by remember { mutableStateOf<Pair<AppKey, Rect?>?>(null) }
                     val pinned = apps.value
                     val isReloading = reloading.value
+                    LaunchedEffect(isReloading, pinned) {
+                        val (key, bounds) = queuedLaunch ?: return@LaunchedEffect
+                        if (!isReloading) {
+                            queuedLaunch = null
+                            pinned?.firstOrNull { it.key == key }?.let { onLaunch(it, bounds) }
+                        }
+                    }
                     when {
                         // Nothing loaded yet (or only an empty list, being reloaded).
                         pinned == null || (pinned.isEmpty() && isReloading) -> CircularProgressIndicator(
@@ -266,8 +275,20 @@ private fun Panel(
                         pinned.isEmpty() -> NoApps(hasPinned.value, onOpenSettings, Modifier.fillMaxSize())
                         else -> {
                             // Stays composed while reloading (the last list is kept), so a press or
-                            // drag under way and the scroll position survive; launching waits.
-                            PinnedGrid(pinned, iconsLocked, { app, bounds -> if (!reloading.value) { onLaunch(app, bounds) } }, onReorder)
+                            // drag under way and the scroll position survive. A tap meanwhile waits
+                            // for the reload, then launches if the app is still there.
+                            PinnedGrid(
+                                pinned,
+                                iconsLocked,
+                                { app, bounds ->
+                                    if (reloading.value) {
+                                        queuedLaunch = app.key to bounds
+                                    } else {
+                                        onLaunch(app, bounds)
+                                    }
+                                },
+                                onReorder,
+                            )
                             if (isReloading) {
                                 CircularProgressIndicator(
                                     color = LABEL_COLOR,
@@ -339,14 +360,11 @@ private fun PinnedGrid(
     val currentOnReorder by rememberUpdatedState(onReorder)
     // While a drag is in progress its order is shown, mapped onto the current apps: a reload
     // meanwhile mustn't move icons under the finger, but updated icons show, removed apps go (the
-    // drag ends if it's the dragged one) and newly pinned ones are added at the end. The released
-    // order then shows at once: the service applies it while it saves.
+    // drag ends, saving the other moves, if it's the dragged one) and newly pinned ones are added at
+    // the end. The released order then shows at once: the drawer applies it while it saves.
     val dragged = remember(drag.order, latest) { drag.order?.let { onto(it, latest) } }
-    if (drag.key != null && dragged != null && dragged.none { it.key == drag.key }) {
-        SideEffect { drag.clear() }
-    }
+    val draggedAppGone = drag.key != null && dragged != null && dragged.none { it.key == drag.key }
     val order = dragged ?: latest
-    // The gesture below outlives recompositions (it isn't restarted by reloads), so it reads this.
     val currentOrder by rememberUpdatedState(order)
     // Finger position in grid coordinates, and where on the icon it grabbed.
     var pointer by remember { mutableStateOf(Offset.Zero) }
@@ -382,10 +400,13 @@ private fun PinnedGrid(
     fun finishDrag() {
         val keys = drag.order
         if (drag.key != null && drag.moved && keys != null) {
-            val dragged = keys.toSet()
-            currentOnReorder(onto(keys, currentLatest).map { it.key }.filter { it in dragged })
+            currentOnReorder(onto(keys, currentLatest).map { it.key }.filter { it in drag.members })
         }
         drag.clear()
+    }
+
+    if (draggedAppGone) {
+        SideEffect { finishDrag() }
     }
 
     // While an app is lifted, keep scrolling each frame the finger rests near the top or bottom.
@@ -463,7 +484,6 @@ private fun PinnedGrid(
     }
 }
 
-/** The pinned app being dragged in the drawer, if any: which one, and the order being dragged. */
 /** The pinned app being dragged in the drawer, if any ([key] null when not dragging). */
 private class GridDrag {
     var key by mutableStateOf<AppKey?>(null)
@@ -472,9 +492,13 @@ private class GridDrag {
     var order by mutableStateOf<List<AppKey>?>(null)
     /** Whether the user has moved anything (a long-press and release alone saves nothing). */
     var moved = false
+    /** The apps there when the drag began: only their order is saved (one pinned meanwhile keeps its place). */
+    var members: Set<AppKey> = emptySet()
+        private set
 
     fun begin(key: AppKey, apps: List<LaunchableApp>) {
         order = apps.map { it.key }
+        members = apps.mapTo(HashSet()) { it.key }
         moved = false
         this.key = key
     }

@@ -22,8 +22,9 @@ import android.util.Log
 import android.view.Display
 import android.view.WindowManager
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
@@ -96,16 +97,23 @@ class EdgeService : LifecycleService() {
     ) {
         /** These apps in [order] (the one place loaded apps are put in a pinned order). */
         fun inOrder(order: List<AppKey>) = copy(keys = order, apps = load.apps?.let { byKey -> order.mapNotNull(byKey::get) })
+
+        companion object {
+            /** The apps of [load] in [order]. */
+            fun of(load: LoadedPinned, order: List<AppKey>) =
+                Pinned(order, load.apps?.let { byKey -> order.mapNotNull(byKey::get) }, load)
+        }
     }
     /** The settings the handle is showing; null until first read. */
     private lateinit var settings: StateFlow<DrawerSettings?>
     /** The settings as last read (the handle isn't shown before they are). */
     private val latestSettings: DrawerSettings? get() = settings.value
     /**
-     * An order chosen in the drawer, shown at once over the saved one until the save lands (then
-     * cleared) or fails (then dropped). The single place a not-yet-saved order lives.
+     * An order chosen in the drawer and not yet saved (the single place one lives), applied by the
+     * drawer over the saved order in the same frame. Cleared once the settings show what was
+     * written (or another write lands), or dropped if the save fails. Main thread only.
      */
-    private val pendingOrder = MutableStateFlow<List<AppKey>?>(null)
+    private var pendingOrder by mutableStateOf<List<AppKey>?>(null)
     /** Bumped to reload the pinned apps after a failed load (e.g. when a drawer opens). */
     private val pinnedRetry = MutableStateFlow(0)
     /** What app labels and icons depend on; the caches are re-warmed when it changes. */
@@ -226,25 +234,35 @@ class EdgeService : LifecycleService() {
                 if (change == settledChange) {
                     // Sized to the pinned apps (no LRU limit to thrash), minus any unpinned since.
                     pinnedIcons.retain(set)
-                    val apps = withContext(Dispatchers.Default) {
-                        // One quick retry here for every drawer; later ones when a drawer opens.
-                        catalog.resolveDrawn(pinnedIcons, set.toList()) ?: run {
-                            delay(LOAD_RETRY_MS)
-                            catalog.resolveDrawn(pinnedIcons, set.toList())
+                    // Retried with backoff until it works (e.g. LauncherApps not ready after boot).
+                    // The failure is reported once, after a quick retry; a drawer that already shows
+                    // a list keeps it (marked reloading) meanwhile.
+                    var attempt = 0
+                    while (true) {
+                        val apps = withContext(Dispatchers.Default) { catalog.resolveDrawn(pinnedIcons, set.toList()) }
+                        if (apps != null) {
+                            emit(LoadedPinned(set, apps.apps.associateBy { it.key }))
+                            break
                         }
+                        if (attempt == 1) {
+                            emit(LoadedPinned(set, null))
+                        }
+                        delay((LOAD_RETRY_MS shl attempt.coerceAtMost(MAX_RETRY_SHIFT)))
+                        attempt++
                     }
-                    emit(LoadedPinned(set, apps?.apps?.associateBy { it.key }))
                 }
             }
-        // ...then put in the pinned order: one chosen in the drawer and not yet saved (only while it
-        // is a reordering of the saved apps), else the saved one. Equal results aren't re-emitted.
-        return combine(keys, pendingOrder, loaded) { saved, pending, load ->
-            val order = pending?.takeIf { it.toSet() == saved.toSet() } ?: saved
-            load?.takeIf { it.keys == order.toSet() }?.let { Pinned(order, null, it).inOrder(order) }
-        }
-            // While reloading, the last list stays (marked as such) rather than vanishing, so an open
-            // drawer keeps its grid, scroll position and any press under way.
-            .scan<Pinned?, Pinned?>(null) { last, next -> next ?: last?.copy(reloading = true) }
+        // ...then put in the saved order (a drawer applies any not-yet-saved one on top).
+        return combine(keys, loaded) { order, load -> load?.takeIf { it.keys == order.toSet() }?.let { Pinned.of(it, order) } }
+            // While reloading, or retrying a failed reload, the last list stays (marked reloading)
+            // rather than vanishing, so an open drawer keeps its grid, scroll and any press under way.
+            .scan<Pinned?, Pinned?>(null) { last, next ->
+                when {
+                    next == null -> last?.copy(reloading = true)
+                    next.apps == null && last?.apps != null -> last.copy(reloading = true)
+                    else -> next
+                }
+            }
             .distinctUntilChanged()
     }
 
@@ -287,36 +305,24 @@ class EdgeService : LifecycleService() {
         }
         var recentLoad: Job? = null
         val added = host.openDrawer(
-            apps = derivedStateOf { shownPinned.value?.let { it.apps.orEmpty() } },
+            // An order chosen here and still being saved is applied on top, in the same frame.
+            apps = derivedStateOf {
+                shownPinned.value?.let { p ->
+                    val pending = pendingOrder?.takeIf { it.toSet() == p.keys.toSet() }
+                    (if (pending != null) { p.inOrder(pending) } else { p }).apps.orEmpty()
+                }
+            },
             reloading = derivedStateOf { shownPinned.value?.reloading == true },
             hasPinned = derivedStateOf { shownPinned.value?.keys?.isNotEmpty() == true },
             recent = recent,
             expectRecents = expectRecents,
             onLaunch = { app, bounds -> catalog.launch(app, bounds) },
             onReorder = { shownOrder ->
-                // Shown at once through the pinned apps (no snap-back while it saves); dropped if
-                // the save fails, unless a newer order has replaced it meanwhile.
                 val saved = latestSettings?.apps
                 if (saved != null) {
                     val order = saved.withVisibleOrder(shownOrder)
-                    pendingOrder.value = order
-                    // In this same frame (the pinned apps confirm it a moment later): no snap-back.
-                    shownPinned.value = shownPinned.value?.inOrder(order)
-                    lifecycleScope.launch {
-                        var written: List<AppKey>? = null
-                        val ok = repo.update { s -> s.copy(apps = s.apps.withVisibleOrder(shownOrder)).also { written = it.apps } }
-                        val final = written
-                        if (ok && final != null) {
-                            // What was actually written (it may differ if the apps changed meanwhile)
-                            // is shown until the settings catch up (at once if nothing changed).
-                            pendingOrder.compareAndSet(order, final)
-                            withTimeoutOrNull(PENDING_ORDER_SETTLE_MS) { settings.first { it?.apps == final } }
-                            pendingOrder.compareAndSet(final, null)
-                        } else {
-                            // Failed: no longer pending, unless a newer order has replaced it.
-                            pendingOrder.compareAndSet(order, null)
-                        }
-                    }
+                    pendingOrder = order
+                    lifecycleScope.launch { savePendingOrder(order, shownOrder) }
                 }
             },
             onOpenSettings = {
@@ -329,12 +335,9 @@ class EdgeService : LifecycleService() {
                     // A child of this drawer's job, so it's cancelled with it. Recomputed whenever
                     // the pinned apps change, so recents never repeat or drop one of them.
                     recentLoad = lifecycleScope.launch(drawerJob) {
-                        // They leave out the pinned apps: those shown, or (until loaded) those in the
-                        // settings. By set: reordering doesn't change what recents leave out.
-                        combine(
-                            snapshotFlow { shownPinned.value?.keys?.toSet() },
-                            settings.map { it?.apps.orEmpty().toSet() },
-                        ) { shown, saved -> shown ?: saved }
+                        // They leave out the pinned apps (the set in settings: reordering doesn't
+                        // change it), and are read again only if that set changes while open.
+                        settings.map { it?.apps.orEmpty().toSet() }
                             .distinctUntilChanged()
                             .collectLatest { keys -> recent.value = recentApps(keys.toList()) }
                     }
@@ -349,6 +352,30 @@ class EdgeService : LifecycleService() {
     /** Whether a change to [pkg] (null: several apps or a whole profile) concerns the pinned apps. */
     private fun affectsPinned(pkg: String?): Boolean =
         pkg == null || latestSettings?.apps.orEmpty().any { it.pkg == pkg }
+
+    /**
+     * Saves a drawer order (pending meanwhile). Clears it once the settings show what was
+     * written, or another write lands first; drops it if the save fails, unless a newer order has
+     * replaced it meanwhile.
+     */
+    private suspend fun savePendingOrder(order: List<AppKey>, shownOrder: List<AppKey>) {
+        val before = latestSettings?.apps
+        var written: List<AppKey>? = null
+        val ok = repo.update { s -> s.copy(apps = s.apps.withVisibleOrder(shownOrder)).also { written = it.apps } }
+        val final = written
+        if (ok && final != null) {
+            if (pendingOrder == order) {
+                pendingOrder = final
+            }
+            // At once if the write changed nothing; otherwise when it (or a later write) arrives.
+            withTimeoutOrNull(PENDING_ORDER_SAFETY_MS) { settings.first { it?.apps == final || it?.apps != before } }
+            if (pendingOrder == final) {
+                pendingOrder = null
+            }
+        } else if (pendingOrder == order) {
+            pendingOrder = null
+        }
+    }
 
     private suspend fun recentApps(pinned: List<AppKey>): List<LaunchableApp> = withContext(Dispatchers.Default) {
         val start = SystemClock.elapsedRealtime()
@@ -447,7 +474,9 @@ class EdgeService : LifecycleService() {
         private const val FOREGROUND_RETRY_MS = 500L
         private const val MAX_RECENT_ICONS = 32
         private const val LOAD_RETRY_MS = 1_000L
-        private const val PENDING_ORDER_SETTLE_MS = 1_000L
+        /** Only so a stuck settings read can't keep it forever; normally cleared long before. */
+        private const val PENDING_ORDER_SAFETY_MS = 30_000L
+        private const val MAX_RETRY_SHIFT = 5
         private const val EXTRA_CLOSE_REASON = "reason"
 
         private const val EXTRA_FOREGROUND_REQUIRED = "foreground_required"
