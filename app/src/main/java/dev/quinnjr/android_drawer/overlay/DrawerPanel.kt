@@ -112,6 +112,8 @@ private val LABEL_COLOR = Color.White
 fun DrawerPanel(
     /** The pinned apps; null while they're still loading. */
     apps: State<List<LaunchableApp>?>,
+    /** The apps shown are being reloaded (an app or the display changed). */
+    reloading: State<Boolean>,
     /** Recently used apps; null while they're still being read (their space is kept meanwhile). */
     recent: State<List<LaunchableApp>?>,
     /** Whether to show the recents section at all (usage access granted). */
@@ -170,7 +172,7 @@ fun DrawerPanel(
                                 ),
                         ) {
                             Panel(
-                                apps, recent, expectRecents, hasPinned, fromRight, iconsLocked,
+                                apps, reloading, recent, expectRecents, hasPinned, fromRight, iconsLocked,
                                 onLaunch, onReorder, onOpenSettings, onRecentsNeeded, onDismiss,
                             )
                         }
@@ -184,6 +186,8 @@ fun DrawerPanel(
 @Composable
 private fun Panel(
     apps: State<List<LaunchableApp>?>,
+    /** The apps shown are being reloaded (an app or the display changed). */
+    reloading: State<Boolean>,
     recent: State<List<LaunchableApp>?>,
     /** Whether to show the recents section at all (usage access granted). */
     expectRecents: Boolean,
@@ -252,15 +256,26 @@ private fun Panel(
                 }
                 Box(Modifier.weight(1f)) {
                     val pinned = apps.value
-                    // A drag keeps the grid (with its frozen order) even if a reload empties it.
-                    val drag = remember { GridDrag() }
+                    val isReloading = reloading.value
                     when {
-                        pinned == null && !drag.active -> CircularProgressIndicator(
+                        // Nothing loaded yet (or only an empty list, being reloaded).
+                        pinned == null || (pinned.isEmpty() && isReloading) -> CircularProgressIndicator(
                             color = LABEL_COLOR,
                             modifier = Modifier.align(Alignment.Center).size(32.dp),
                         )
-                        pinned.isNullOrEmpty() && !drag.active -> NoApps(hasPinned.value, onOpenSettings, Modifier.fillMaxSize())
-                        else -> PinnedGrid(pinned, drag, iconsLocked, onLaunch, onReorder)
+                        pinned.isEmpty() -> NoApps(hasPinned.value, onOpenSettings, Modifier.fillMaxSize())
+                        else -> {
+                            // Stays composed while reloading (the last list is kept), so a press or
+                            // drag under way and the scroll position survive; launching waits.
+                            PinnedGrid(pinned, iconsLocked, { app, bounds -> if (!reloading.value) { onLaunch(app, bounds) } }, onReorder)
+                            if (isReloading) {
+                                CircularProgressIndicator(
+                                    color = LABEL_COLOR,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).size(16.dp),
+                                )
+                            }
+                        }
                     }
                 }
                 IconButton(
@@ -310,10 +325,7 @@ private fun RecentSection(recent: List<LaunchableApp>?, rows: Int, onLaunch: (La
  */
 @Composable
 private fun PinnedGrid(
-    /** The pinned apps; null while they're reloading (only during a drag, which keeps the grid). */
-    latest: List<LaunchableApp>?,
-    /** The drag in progress, owned by the panel so it keeps the grid even if a reload empties it. */
-    drag: GridDrag,
+    latest: List<LaunchableApp>,
     iconsLocked: Boolean,
     onLaunch: (LaunchableApp, Rect?) -> Unit,
     onReorder: (List<AppKey>) -> Unit,
@@ -321,24 +333,19 @@ private fun PinnedGrid(
     val gridState = rememberLazyGridState()
     val haptics = LocalHapticFeedback.current
     val edgePx = with(LocalDensity.current) { AUTOSCROLL_EDGE.toPx() }
+    val drag = remember { GridDrag() }
+    // The gesture below outlives recompositions (reloads don't restart it), so it reads these.
+    val currentLatest by rememberUpdatedState(latest)
+    val currentOnReorder by rememberUpdatedState(onReorder)
     // While a drag is in progress its order is shown, mapped onto the current apps: a reload
     // meanwhile mustn't move icons under the finger, but updated icons show, removed apps go (the
     // drag ends if it's the dragged one) and newly pinned ones are added at the end. The released
     // order then shows at once: the service applies it while it saves.
-    val dragged = drag.order?.let { keys ->
-        if (latest == null) {
-            keys.mapNotNull(drag.snapshot::get)
-        } else {
-            val byKey = latest.associateBy { it.key }
-            val inDrag = keys.toSet()
-            keys.mapNotNull(byKey::get) + latest.filter { it.key !in inDrag }
-        }
-    }
+    val dragged = remember(drag.order, latest) { drag.order?.let { onto(it, latest) } }
     if (drag.key != null && dragged != null && dragged.none { it.key == drag.key }) {
         SideEffect { drag.clear() }
     }
-    val dragging = drag.key
-    val order = dragged ?: latest.orEmpty()
+    val order = dragged ?: latest
     // The gesture below outlives recompositions (it isn't restarted by reloads), so it reads this.
     val currentOrder by rememberUpdatedState(order)
     // Finger position in grid coordinates, and where on the icon it grabbed.
@@ -362,23 +369,27 @@ private fun PinnedGrid(
         val target = appAt(pointer) ?: return
         if (laidOut && target.index != from) {
             drag.order = current.moved(from, target.index).map { it.key }
+            drag.moved = true
         }
     }
 
     /**
-     * Ends the drag, saving the new order if it changed: on release, and also when the system
-     * cancels the gesture (shade pulled, Home, screen off), so a rearrangement isn't lost.
+     * Ends the drag, saving the order if the user moved anything: on release, and also when the
+     * system cancels the gesture (shade pulled, Home, screen off), so a rearrangement isn't lost.
+     * Built from the drag state itself (not the last frame), and only the apps that were being
+     * dragged among: one pinned meanwhile keeps the place it was given.
      */
     fun finishDrag() {
-        val keys = currentOrder.map { it.key }
-        if (drag.key != null && keys != drag.start) {
-            onReorder(keys)
+        val keys = drag.order
+        if (drag.key != null && drag.moved && keys != null) {
+            val dragged = keys.toSet()
+            currentOnReorder(onto(keys, currentLatest).map { it.key }.filter { it in dragged })
         }
         drag.clear()
     }
 
     // While an app is lifted, keep scrolling each frame the finger rests near the top or bottom.
-    LaunchedEffect(dragging != null) {
+    LaunchedEffect(drag.key != null) {
         while (drag.key != null) {
             withFrameNanos { }
             if (!hasMoved) { continue }
@@ -424,14 +435,14 @@ private fun PinnedGrid(
     LazyVerticalGrid(
         columns = GridCells.Fixed(COLUMNS),
         state = gridState,
-        userScrollEnabled = dragging == null,
+        userScrollEnabled = drag.key == null,
         // Plain padding, not contentPadding: the drag hit-testing compares the finger (in this
         // modifier's coordinates) with item offsets, which contentPadding would shift.
         modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = CELL_SPACING, bottom = 16.dp).then(reorder),
         verticalArrangement = Arrangement.spacedBy(CELL_SPACING),
     ) {
         items(order, key = { it.key.encode() }) { app ->
-            val lifted = app.key == dragging
+            val lifted = app.key == drag.key
             val cell = if (lifted) {
                 Modifier.zIndex(1f).graphicsLayer {
                     // Follow the finger, relative to wherever the grid currently places this cell.
@@ -453,31 +464,33 @@ private fun PinnedGrid(
 }
 
 /** The pinned app being dragged in the drawer, if any: which one, and the order being dragged. */
+/** The pinned app being dragged in the drawer, if any ([key] null when not dragging). */
 private class GridDrag {
     var key by mutableStateOf<AppKey?>(null)
         private set
     /** The order being dragged, as keys (shown mapped onto the current apps). */
     var order by mutableStateOf<List<AppKey>?>(null)
-    /** The order when the drag started, to tell whether it changed. */
-    var start: List<AppKey> = emptyList()
-        private set
-    /** The apps as they were at the start, for while the current ones are reloading. */
-    var snapshot: Map<AppKey, LaunchableApp> = emptyMap()
-        private set
-    val active: Boolean get() = key != null
+    /** Whether the user has moved anything (a long-press and release alone saves nothing). */
+    var moved = false
 
     fun begin(key: AppKey, apps: List<LaunchableApp>) {
-        start = apps.map { it.key }
-        snapshot = apps.associateBy { it.key }
-        order = start
+        order = apps.map { it.key }
+        moved = false
         this.key = key
     }
 
     fun clear() {
         key = null
         order = null
-        snapshot = emptyMap()
+        moved = false
     }
+}
+
+/** [keys] in order mapped onto [apps]: missing ones dropped, apps not among them appended. */
+private fun onto(keys: List<AppKey>, apps: List<LaunchableApp>): List<LaunchableApp> {
+    val byKey = apps.associateBy { it.key }
+    val inKeys = keys.toSet()
+    return keys.mapNotNull(byKey::get) + apps.filter { it.key !in inKeys }
 }
 
 @Composable

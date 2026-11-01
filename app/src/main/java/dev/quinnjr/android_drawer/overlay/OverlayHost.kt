@@ -108,6 +108,8 @@ class OverlayHost(
     fun openDrawer(
         /** The pinned apps; null while they're still loading (the drawer shows meanwhile). */
         apps: State<List<LaunchableApp>?>,
+        /** The apps shown are being reloaded: shown, but not launched from. */
+        reloading: State<Boolean>,
         hasPinned: State<Boolean>,
         recent: State<List<LaunchableApp>?>,
         expectRecents: Boolean,
@@ -133,6 +135,7 @@ class OverlayHost(
         compose.setContent {
             DrawerPanel(
                 apps = apps,
+                reloading = reloading,
                 recent = recent,
                 hasPinned = hasPinned,
                 expectRecents = expectRecents,
