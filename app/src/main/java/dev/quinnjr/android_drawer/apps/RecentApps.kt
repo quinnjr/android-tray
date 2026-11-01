@@ -39,7 +39,7 @@ class RecentApps(private val context: Context) {
         settledUntil = settleAt
         // Recent events go on a copy, as they may still change; skip the copy when there are none.
         val tail = events(settleAt, now)
-        block(if (tail.isEmpty()) h else h.copy().replay(tail))
+        block(if (tail.isEmpty()) { h } else { h.copy().replay(tail) })
     }
 
     fun hasAccess(): Boolean {
@@ -86,7 +86,7 @@ class RecentApps(private val context: Context) {
         val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
         val pm = context.packageManager
         val default = pm.resolveActivity(home, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName
-        if (default != null && default != SYSTEM_RESOLVER) return setOf(default)
+        if (default != null && default != SYSTEM_RESOLVER) { return setOf(default) }
         // Settings' fallback home activity has a negative priority; it is not a launcher.
         return pm.queryIntentActivities(home, PackageManager.MATCH_DEFAULT_ONLY)
             .filter { it.priority >= 0 }
@@ -124,7 +124,7 @@ internal class UsageHistory {
     fun resumed(pkg: String, time: Long, className: String? = null) {
         if (time >= (lastUsed[pkg] ?: Long.MIN_VALUE)) {
             lastUsed[pkg] = time
-            if (className != null) lastActivity[pkg] = className
+            if (className != null) { lastActivity[pkg] = className }
         }
         resumed[pkg to className.orEmpty()] = time
     }

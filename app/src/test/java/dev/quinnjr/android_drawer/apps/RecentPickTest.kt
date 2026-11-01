@@ -13,7 +13,7 @@ class RecentPickTest {
                 resumed(pkg, time)
                 paused(pkg)
             }
-            for ((pkg, time) in stillOpen) resumed(pkg, time)
+            for ((pkg, time) in stillOpen) { resumed(pkg, time) }
         }
 
     private fun UsageHistory.pick(excluded: Set<String> = emptySet(), launchable: Set<String> = all) =

@@ -20,7 +20,7 @@ class DrawerWindowView(context: Context, private val onBack: () -> Unit) : Frame
 
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
-        if (hasWindowFocus) hadFocus = true else if (hadFocus) onBack()
+        if (hasWindowFocus) { hadFocus = true } else if (hadFocus) { onBack() }
     }
 
     override fun onAttachedToWindow() {
@@ -42,7 +42,7 @@ class DrawerWindowView(context: Context, private val onBack: () -> Unit) : Frame
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-            if (event.action == KeyEvent.ACTION_UP) onBack()
+            if (event.action == KeyEvent.ACTION_UP) { onBack() }
             return true
         }
         return super.dispatchKeyEvent(event)

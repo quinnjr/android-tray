@@ -78,10 +78,10 @@ class OverlayHost(
         view.configure(s.side, s.handleColor, s.handleAlpha, screen.width)
         // While the handle is being dragged it follows the finger; a settings write or rotation
         // landing meanwhile must not snap it back to the stored spot.
-        if (!view.isDragging) placeHandle(s, screen)
+        if (!view.isDragging) { placeHandle(s, screen) }
         // One window update for position, look and visibility together.
         applyHandleVisibility(updateWindow = false)
-        if (view in added) update(view, handleParams) else add(view, handleParams)
+        if (view in added) { update(view, handleParams) } else { add(view, handleParams) }
         if (!watching) {
             watching = true
             watcher.start()
@@ -95,7 +95,7 @@ class OverlayHost(
     }
 
     fun setFullscreen(value: Boolean) {
-        if (fullscreen == value) return
+        if (fullscreen == value) { return }
         fullscreen = value
         applyHandleVisibility()
     }
@@ -114,7 +114,7 @@ class OverlayHost(
     ): Boolean {
         val s = settings ?: return false
         if (drawer != null) {
-            if (isDrawerOpen) return false
+            if (isDrawerOpen) { return false }
             // Swiped again while it was closing: replace it rather than wait for the animation.
             removeDrawer()
         }
@@ -149,7 +149,7 @@ class OverlayHost(
                 },
                 onDismiss = ::closeDrawer,
                 // Leave the composition before tearing down its window.
-                onHidden = { root.post { if (drawer === root) removeDrawer() } },
+                onHidden = { root.post { if (drawer === root) { removeDrawer() } } },
             )
         }
         drawer = root
@@ -229,7 +229,7 @@ class OverlayHost(
     private fun applyHandleVisibility(updateWindow: Boolean = true) {
         val view = handle ?: return
         val visible = !fullscreen && !isDrawerOpen
-        view.visibility = if (visible) View.VISIBLE else View.GONE
+        view.visibility = if (visible) { View.VISIBLE } else { View.GONE }
         // A hidden handle must not swallow touches meant for the app underneath.
         val flags = if (visible) {
             handleParams.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
@@ -238,7 +238,7 @@ class OverlayHost(
         }
         if (flags != handleParams.flags) {
             handleParams.flags = flags
-            if (updateWindow && view in added) update(view, handleParams)
+            if (updateWindow && view in added) { update(view, handleParams) }
         }
     }
 
@@ -246,12 +246,12 @@ class OverlayHost(
     private fun replaceForInsets() {
         val view = handle ?: return
         val s = settings ?: return
-        if (view.isDragging) return
+        if (view.isDragging) { return }
         val x = handleParams.x
         val y = handleParams.y
         placeHandle(s, screenSize())
         // Only when it moved: the update itself can dispatch insets again.
-        if (handleParams.x != x || handleParams.y != y) update(view, handleParams)
+        if (handleParams.x != x || handleParams.y != y) { update(view, handleParams) }
     }
 
     private fun placeHandle(s: DrawerSettings, screen: Size) {
@@ -289,11 +289,11 @@ class OverlayHost(
     }
 
     private fun update(view: View, params: WindowManager.LayoutParams) = guard {
-        if (view in added) wm.updateViewLayout(view, params)
+        if (view in added) { wm.updateViewLayout(view, params) }
     }
 
     private fun remove(view: View) = guard {
-        if (added.remove(view)) wm.removeViewImmediate(view)
+        if (added.remove(view)) { wm.removeViewImmediate(view) }
     }
 
     private inline fun guard(block: () -> Unit) {

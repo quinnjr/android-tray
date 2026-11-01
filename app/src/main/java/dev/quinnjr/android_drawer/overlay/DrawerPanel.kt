@@ -121,7 +121,7 @@ fun DrawerPanel(
     onHidden: () -> Unit,
 ) {
     LaunchedEffect(visible.isIdle, visible.currentState) {
-        if (visible.isIdle && !visible.currentState && !visible.targetState) onHidden()
+        if (visible.isIdle && !visible.currentState && !visible.targetState) { onHidden() }
     }
     // Always dark so the white app labels stay readable whatever the system theme.
     AppTheme(dark = true) {
@@ -150,7 +150,7 @@ fun DrawerPanel(
                     }
                     Box(
                         Modifier
-                            .align(if (fromRight) Alignment.TopEnd else Alignment.TopStart)
+                            .align(if (fromRight) { Alignment.TopEnd } else { Alignment.TopStart })
                             .fillMaxHeight()
                             .animateEnterExit(
                                 enter = slideInHorizontally(initialOffsetX = offscreen) + fadeIn(),
@@ -202,8 +202,8 @@ private fun Panel(
                 detectHorizontalDragGestures(
                     onDragStart = { dragX[0] = offset.value },
                     onDragEnd = {
-                        val towardEdge = if (fromRight) dragX[0] else -dragX[0]
-                        if (towardEdge > dismissPx) onDismiss() else scope.launch { offset.animateTo(0f) }
+                        val towardEdge = if (fromRight) { dragX[0] } else { -dragX[0] }
+                        if (towardEdge > dismissPx) { onDismiss() } else { scope.launch { offset.animateTo(0f) } }
                     },
                     onDragCancel = { scope.launch { offset.animateTo(0f) } },
                 ) { _, dx ->
@@ -211,7 +211,7 @@ private fun Panel(
                     // events in a row would otherwise read the same stale value and drop deltas.
                     // Only follow drags toward the edge the panel came from.
                     val next = dragX[0] + dx
-                    dragX[0] = if (fromRight) next.coerceAtLeast(0f) else next.coerceAtMost(0f)
+                    dragX[0] = if (fromRight) { next.coerceAtLeast(0f) } else { next.coerceAtMost(0f) }
                     scope.launch { offset.snapTo(dragX[0]) }
                 }
             },
@@ -226,7 +226,7 @@ private fun Panel(
             }
             Column(Modifier.padding(top = 16.dp)) {
                 // Fixed above the scrolling pinned apps, so recents arriving late never shift or hide them.
-                if (recentRows > 0) RecentSection(recent.value?.take(recentRows * COLUMNS), recentRows, onLaunch)
+                if (recentRows > 0) { RecentSection(recent.value?.take(recentRows * COLUMNS), recentRows, onLaunch) }
                 Box(Modifier.weight(1f)) {
                     if (apps.isEmpty()) {
                         NoApps(hasPinned, onOpenSettings, Modifier.fillMaxSize())
@@ -311,7 +311,7 @@ private fun PinnedGrid(
         // Wait for the grid to lay out the previous move before moving again.
         val laidOut = gridState.layoutInfo.visibleItemsInfo.any { it.index == from && it.key == key.encode() }
         val target = appAt(pointer) ?: return
-        if (laidOut && target.index != from) order = order.moved(from, target.index)
+        if (laidOut && target.index != from) { order = order.moved(from, target.index) }
     }
 
     fun finishDrag() {
@@ -326,14 +326,14 @@ private fun PinnedGrid(
     LaunchedEffect(dragging != null) {
         while (dragging != null) {
             withFrameNanos { }
-            if (!hasMoved) continue
+            if (!hasMoved) { continue }
             val height = gridState.layoutInfo.viewportSize.height
             val delta = when {
                 pointer.y < edgePx -> -AUTOSCROLL_STEP_PX
                 pointer.y > height - edgePx -> AUTOSCROLL_STEP_PX
                 else -> 0f
             }
-            if (delta != 0f && gridState.dispatchRawDelta(delta) != 0f) followPointer()
+            if (delta != 0f && gridState.dispatchRawDelta(delta) != 0f) { followPointer() }
         }
     }
 
@@ -354,7 +354,7 @@ private fun PinnedGrid(
                 onDragEnd = ::finishDrag,
                 onDragCancel = ::finishDrag,
             ) { change, _ ->
-                if (dragging == null) return@detectDragGesturesAfterLongPress
+                if (dragging == null) { return@detectDragGesturesAfterLongPress }
                 change.consume()
                 pointer = change.position
                 hasMoved = true
@@ -389,7 +389,7 @@ private fun PinnedGrid(
                 Modifier.animateItem()
             }
             // A long-press that turns into a drag must not also launch the app on release.
-            AppCell(app, { a, b -> if (dragging == null) onLaunch(a, b) }, cell)
+            AppCell(app, { a, b -> if (dragging == null) { onLaunch(a, b) } }, cell)
         }
     }
 }

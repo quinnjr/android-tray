@@ -15,12 +15,12 @@ import kotlinx.coroutines.launch
 /** Brings the handle back after a reboot or an app update. */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) { return }
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val enabled = SettingsRepository(context).settings.first().enabled
-                if (enabled && Settings.canDrawOverlays(context)) EdgeService.start(context)
+                if (enabled && Settings.canDrawOverlays(context)) { EdgeService.start(context) }
             } catch (e: Exception) {
                 // Not worth crashing the app at boot; the handle comes back when the app is opened.
                 Log.e(TAG, "Could not start the edge handle", e)

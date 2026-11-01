@@ -29,7 +29,7 @@ class SettingsRepository(context: Context) {
 
     /** Falls back to defaults if the file can't be read, rather than failing every collector. */
     val settings: Flow<DrawerSettings> = store.data
-        .catch { e -> if (e is IOException) emit(emptyPreferences()) else throw e }
+        .catch { e -> if (e is IOException) { emit(emptyPreferences()) } else { throw e } }
         .map { it.toSettings() }
         .distinctUntilChanged()
 

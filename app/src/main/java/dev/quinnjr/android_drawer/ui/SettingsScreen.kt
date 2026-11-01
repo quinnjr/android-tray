@@ -203,8 +203,8 @@ fun SettingsScreen(
                                 .size(36.dp)
                                 .background(Color(color), CircleShape)
                                 .border(
-                                    if (selected) 3.dp else 1.dp,
-                                    if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                                    if (selected) { 3.dp } else { 1.dp },
+                                    if (selected) { MaterialTheme.colorScheme.primary } else { MaterialTheme.colorScheme.outline },
                                     CircleShape,
                                 )
                                 .clickable { onColorChange(color) },

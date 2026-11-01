@@ -12,11 +12,11 @@ data class AppKey(val component: String, val userSerial: Long) {
     companion object {
         fun decode(s: String): AppKey? {
             val sep = s.indexOf('|')
-            if (sep <= 0) return null
+            if (sep <= 0) { return null }
             val serial = s.substring(0, sep).toLongOrNull() ?: return null
             val component = s.substring(sep + 1)
             // flattenToString() form is always "package/class".
-            if (!component.contains('/') || component.startsWith('/') || component.endsWith('/')) return null
+            if (!component.contains('/') || component.startsWith('/') || component.endsWith('/')) { return null }
             return AppKey(component, serial)
         }
     }
@@ -45,13 +45,13 @@ internal fun List<AppKey>.movedAmongShown(shown: Set<AppKey>, key: AppKey, delta
     val visible = filter { it in shown }
     val from = visible.indexOf(key)
     val to = from + delta
-    if (from < 0 || to !in visible.indices) return this
+    if (from < 0 || to !in visible.indices) { return this }
     return withVisibleOrder(visible.moved(from, to))
 }
 
 /** This list with the item at [from] moved to [to]; unchanged if either is out of range. */
 internal fun <T> List<T>.moved(from: Int, to: Int): List<T> {
-    if (from !in indices || to !in indices) return this
+    if (from !in indices || to !in indices) { return this }
     return toMutableList().apply { add(to, removeAt(from)) }
 }
 
@@ -64,7 +64,7 @@ internal fun List<AppKey>.withVisibleOrder(visible: List<AppKey>): List<AppKey> 
     val movableSet = movable.toSet()
     val next = movable.iterator()
     // hasNext(): a duplicated key (which decodeApps already drops) mustn't exhaust the iterator.
-    return map { if (it in movableSet && next.hasNext()) next.next() else it }
+    return map { if (it in movableSet && next.hasNext()) { next.next() } else { it } }
 }
 
 internal fun encodeApps(apps: List<AppKey>): String = apps.joinToString("\n") { it.encode() }

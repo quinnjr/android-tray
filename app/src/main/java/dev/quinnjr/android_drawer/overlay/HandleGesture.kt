@@ -54,15 +54,15 @@ class HandleGesture(
 
     /** Returns true at the moment drag mode starts. */
     fun tick(t: Long): Boolean {
-        if (!active || dragging || movedPastSlop || opened) return false
-        if (t - downT < longPressMs) return false
+        if (!active || dragging || movedPastSlop || opened) { return false }
+        if (t - downT < longPressMs) { return false }
         dragging = true
         return true
     }
 
     fun move(x: Float, y: Float, t: Long): GestureResult {
-        if (!active) return GestureResult.None
-        if (dragging) return GestureResult.Move(x, y)
+        if (!active) { return GestureResult.None }
+        if (dragging) { return GestureResult.Move(x, y) }
 
         val dx = x - downX
         val dy = y - downY
@@ -74,7 +74,7 @@ class HandleGesture(
 
         // Judge this move as a swipe first: a quick inward swipe whose first move arrives after
         // the long-press time (the timer hadn't run yet) must still open, not pick the handle up.
-        val inward = if (side == Side.RIGHT) -dx else dx
+        val inward = if (side == Side.RIGHT) { -dx } else { dx }
         if (inward >= openDistancePx && abs(dx) > abs(dy)) {
             movedPastSlop = movedPastSlop || pastSlop
             opened = true
@@ -83,7 +83,7 @@ class HandleGesture(
         // Otherwise a long press that came due before this move (finger still within slop until
         // now) picks the handle up, and this move is its first drag step. The finger really did
         // rest for the long-press time; the timer, had it run on time, would have done the same.
-        if (tick(t)) return GestureResult.Move(x, y)
+        if (tick(t)) { return GestureResult.Move(x, y) }
         movedPastSlop = movedPastSlop || pastSlop
         return GestureResult.None
     }
@@ -91,7 +91,7 @@ class HandleGesture(
     fun up(x: Float, y: Float, t: Long): GestureResult {
         val wasDragging = active && dragging
         cancel()
-        if (!wasDragging) return GestureResult.None
+        if (!wasDragging) { return GestureResult.None }
         return GestureResult.Drop(sideAt(x), y)
     }
 

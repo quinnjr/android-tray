@@ -41,7 +41,7 @@ class HandleView(
     val isDragging get() = gesture?.isDragging == true
 
     private val longPress = Runnable {
-        if (gesture?.tick(SystemClock.uptimeMillis()) == true) pickedUp()
+        if (gesture?.tick(SystemClock.uptimeMillis()) == true) { pickedUp() }
     }
 
     fun configure(side: Side, color: Long, alpha: Float, screenWidth: Int) {
@@ -60,7 +60,7 @@ class HandleView(
         ) {
             val next = HandleGesture(side, touchSlop, openDistance, longPressMs, screenWidth)
             // Mid-gesture (e.g. rotating while dragging the handle), swap it in once the finger lifts.
-            if (touching) pendingGesture = next else gesture = next
+            if (touching) { pendingGesture = next } else { gesture = next }
         }
         invalidate()
     }
@@ -70,13 +70,13 @@ class HandleView(
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
         // Win the edge swipe over the system back gesture, but only within the handle itself.
-        if (changed) systemGestureExclusionRects = listOf(Rect(0, 0, width, height))
+        if (changed) { systemGestureExclusionRects = listOf(Rect(0, 0, width, height)) }
     }
 
     override fun onDraw(canvas: Canvas) {
         val pillWidth = PILL_WIDTH_DP * density
         val inset = 2 * density
-        val left = if (side == Side.RIGHT) width - pillWidth - inset else inset
+        val left = if (side == Side.RIGHT) { width - pillWidth - inset } else { inset }
         pill.set(left, 0f, left + pillWidth, height.toFloat())
         canvas.drawRoundRect(pill, pillWidth / 2, pillWidth / 2, paint)
     }
@@ -84,7 +84,7 @@ class HandleView(
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
         // A new touch always starts on the latest configuration, even if the last one never ended.
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) endTouch()
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) { endTouch() }
         val g = gesture ?: return false
         // Uptime, like postDelayed: the long-press runnable then never fires "early" for tick().
         val now = event.eventTime
@@ -107,7 +107,7 @@ class HandleView(
                     }
                     is GestureResult.Move -> {
                         // Picked up by this move (the long-press came due before it).
-                        if (!wasDragging) pickedUp()
+                        if (!wasDragging) { pickedUp() }
                         onDragMove(r.rawX, r.rawY)
                     }
                     else -> Unit
@@ -119,7 +119,7 @@ class HandleView(
                 // If the screen changed mid-drag (rotation), judge the side on the new width.
                 val drop = (r as? GestureResult.Drop)?.let { pendingGesture?.sideAt(event.rawX) ?: it.side }
                 endTouch()
-                if (drop != null) onDrop(drop, event.rawY)
+                if (drop != null) { onDrop(drop, event.rawY) }
             }
             MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(longPress)
@@ -128,7 +128,7 @@ class HandleView(
                 val dropSide = (pendingGesture ?: g).sideAt(lastRawX)
                 g.cancel()
                 endTouch()
-                if (wasDragging) onDrop(dropSide, lastRawY)
+                if (wasDragging) { onDrop(dropSide, lastRawY) }
             }
         }
         return true

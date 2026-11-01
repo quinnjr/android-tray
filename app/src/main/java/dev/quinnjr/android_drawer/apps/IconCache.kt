@@ -23,8 +23,8 @@ class IconCache<K, V>(private val maxSize: Int = Int.MAX_VALUE) {
 
     /** Stores [value] unless its key was invalidated since [generation] was taken. */
     fun put(key: K, value: V, generation: Int) = synchronized(lock) {
-        if (generation < clearedAt) return@synchronized
-        if (forgets.any { (at, covers) -> at > generation && covers(key) }) return@synchronized
+        if (generation < clearedAt) { return@synchronized }
+        if (forgets.any { (at, covers) -> at > generation && covers(key) }) { return@synchronized }
         entries[key] = value
     }
 

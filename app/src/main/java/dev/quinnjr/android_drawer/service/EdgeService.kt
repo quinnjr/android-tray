@@ -86,7 +86,7 @@ class EdgeService : LifecycleService() {
     private val appOps by lazy { getSystemService(AppOpsManager::class.java) }
     private val overlayPermissionListener = AppOpsManager.OnOpChangedListener { _, pkg ->
         // Revoking "Display over other apps" doesn't kill us; the windows just vanish.
-        if (pkg == packageName) mainHandler.post { if (!Settings.canDrawOverlays(this)) stop() }
+        if (pkg == packageName) { mainHandler.post { if (!Settings.canDrawOverlays(this)) { stop() } } }
     }
 
     /**
@@ -100,7 +100,7 @@ class EdgeService : LifecycleService() {
             // A drawer still being prepared must not appear after this.
             openJob?.cancel()
             // With the screen off no frames run, so an exit animation would only play on unlock.
-            if (intent.action == Intent.ACTION_SCREEN_OFF) host.removeDrawer() else host.closeDrawer()
+            if (intent.action == Intent.ACTION_SCREEN_OFF) { host.removeDrawer() } else { host.closeDrawer() }
         }
     }
 
@@ -128,7 +128,7 @@ class EdgeService : LifecycleService() {
             },
             onFatal = ::stop,
         )
-        if (overlayContext !== this) overlayContext.registerComponentCallbacks(configCallbacks)
+        if (overlayContext !== this) { overlayContext.registerComponentCallbacks(configCallbacks) }
         useDrawConfig(DrawConfig.of(overlayContext.resources.configuration, DRAWER_ICON_SIZE))
         appOps.startWatchingMode(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, packageName, overlayPermissionListener)
         @Suppress("DEPRECATION") // Still delivered for Home/Recents; only sending it is restricted.
@@ -149,7 +149,7 @@ class EdgeService : LifecycleService() {
                             // Only a plain (sticky-restart) start can get here: for one through
                             // startForegroundService() the system already allowed the foreground
                             // start, and stopping before startForeground() would crash the app.
-                            if (!foreground && !foregroundRequired) stop()
+                            if (!foreground && !foregroundRequired) { stop() }
                         }, FOREGROUND_RETRY_MS)
                     }
                 }
@@ -187,7 +187,7 @@ class EdgeService : LifecycleService() {
 
     private fun openDrawer() {
         // Further swipes while the drawer is being prepared would only redo the same work.
-        if (openJob?.isActive == true || host.isDrawerOpen) return
+        if (openJob?.isActive == true || host.isDrawerOpen) { return }
         // Recents depend on what was just used, so they're read on every open and fill in when
         // ready; until then the drawer keeps their space if it expects any.
         val expectRecents = recents.hasAccess()
@@ -212,7 +212,7 @@ class EdgeService : LifecycleService() {
                 onClosed = { recentJob?.cancel() },
             )
             recentJob?.cancel()
-            if (!shown || !expectRecents) return@launch
+            if (!shown || !expectRecents) { return@launch }
             recentJob = lifecycleScope.launch { recent.value = recentApps(keys) }
         }
     }
@@ -246,7 +246,7 @@ class EdgeService : LifecycleService() {
      * first, or the system crashes the app, so that is (re)tried before stopping.
      */
     private fun stop() {
-        if (foregroundRequired && !foreground) foreground = tryStartForeground()
+        if (foregroundRequired && !foreground) { foreground = tryStartForeground() }
         stopSelf()
     }
 
@@ -268,21 +268,21 @@ class EdgeService : LifecycleService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.getBooleanExtra(EXTRA_FOREGROUND_REQUIRED, false) == true) {
             foregroundRequired = true
-            if (!foreground) foreground = tryStartForeground()
+            if (!foreground) { foreground = tryStartForeground() }
         }
         return super.onStartCommand(intent, flags, startId)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        if (overlayContext === this) onDisplayChanged(newConfig)
+        if (overlayContext === this) { onDisplayChanged(newConfig) }
     }
 
     override fun onDestroy() {
         mainHandler.removeCallbacksAndMessages(null)
         appOps.stopWatchingMode(overlayPermissionListener)
         unregisterReceiver(closeDrawerReceiver)
-        if (overlayContext !== this) overlayContext.unregisterComponentCallbacks(configCallbacks)
+        if (overlayContext !== this) { overlayContext.unregisterComponentCallbacks(configCallbacks) }
         host.removeAll()
         super.onDestroy()
     }
@@ -291,7 +291,7 @@ class EdgeService : LifecycleService() {
     private fun createOverlayContext(): Context {
         // Android 11's window context doesn't get its own configuration callbacks (they go to the
         // application, ahead of its resources updating), so there the service itself is used.
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return this
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) { return this }
         val display = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY) ?: return this
         return createDisplayContext(display)
             .createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null)

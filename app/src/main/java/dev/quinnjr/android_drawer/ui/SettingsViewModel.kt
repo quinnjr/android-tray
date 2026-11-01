@@ -107,7 +107,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     fun syncService() = viewModelScope.launch {
         val app = getApplication<Application>()
         val enabled = repo.settings.first().enabled
-        if (enabled && Settings.canDrawOverlays(app)) EdgeService.start(app) else EdgeService.stop(app)
+        if (enabled && Settings.canDrawOverlays(app)) { EdgeService.start(app) } else { EdgeService.stop(app) }
     }
 
     fun toggleApp(key: AppKey) = update { it.copy(apps = it.apps.toggled(key)) }
@@ -127,4 +127,4 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
-internal fun List<AppKey>.toggled(key: AppKey): List<AppKey> = if (key in this) this - key else this + key
+internal fun List<AppKey>.toggled(key: AppKey): List<AppKey> = if (key in this) { this - key } else { this + key }

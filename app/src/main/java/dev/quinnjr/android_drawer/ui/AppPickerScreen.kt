@@ -60,7 +60,7 @@ fun AppPickerScreen(
             return@Scaffold
         }
         val filtered = remember(apps, query) {
-            if (query.isBlank()) apps else apps.filter { it.label.contains(query.trim(), ignoreCase = true) }
+            if (query.isBlank()) { apps } else { apps.filter { it.label.contains(query.trim(), ignoreCase = true) } }
         }
         LazyColumn(contentPadding = padding) {
             item {
