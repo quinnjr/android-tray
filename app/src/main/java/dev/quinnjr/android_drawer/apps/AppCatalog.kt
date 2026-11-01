@@ -34,7 +34,6 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
 
 data class LaunchableApp(
@@ -247,7 +246,7 @@ class AppCatalog(context: Context) {
 }
 
 /** How long app changes must settle before a burst of them (e.g. many updates) is acted on once. */
-private const val APPS_CHANGED_DEBOUNCE_MS = 500L
+internal const val APPS_CHANGED_DEBOUNCE_MS = 500L
 
 /** Resolved pinned apps, and the keys that are definitely unavailable (not merely failed to load). */
 data class Resolved(val apps: List<LaunchableApp>, val unavailable: Set<AppKey>)
@@ -273,17 +272,6 @@ val MakeEach: AppSource = { _, make -> make() }
 /** Events with a burst collapsed into one once it settles. */
 @OptIn(FlowPreview::class)
 fun <T> Flow<T>.settled(): Flow<T> = debounce(APPS_CHANGED_DEBOUNCE_MS)
-
-/**
- * App changes worth reloading for. [onChange] sees every change at once (to drop caches), then a
- * burst of [relevant] ones (e.g. many updates) gives a single emission once it settles. Starts
- * with one emission, for the initial load.
- */
-fun appChanges(
-    context: Context,
-    relevant: (pkg: String?) -> Boolean = { true },
-    onChange: (pkg: String?) -> Unit = {},
-): Flow<Unit> = appsChanged(context).onEach(onChange).reloads(relevant)
 
 /** These app changes as reloads: a burst of [relevant] ones gives one, and there's one to start. */
 fun Flow<String?>.reloads(relevant: (pkg: String?) -> Boolean = { true }): Flow<Unit> =
