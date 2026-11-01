@@ -2,6 +2,8 @@ package dev.quinnjr.android_drawer.overlay
 
 import android.graphics.Rect
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.fadeIn
@@ -129,18 +131,35 @@ fun DrawerPanel(
                 .fillMaxSize()
                 .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onDismiss),
         ) {
-            AnimatedVisibility(visibleState = visible, enter = fadeIn(), exit = fadeOut()) {
-                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.3f)))
-            }
-            AnimatedVisibility(
-                visibleState = visible,
-                modifier = Modifier
-                    .align(if (fromRight) Alignment.TopEnd else Alignment.TopStart)
-                    .fillMaxHeight(),
-                enter = slideInHorizontally { if (fromRight) it else -it } + fadeIn(),
-                exit = slideOutHorizontally { if (fromRight) it else -it } + fadeOut(),
-            ) {
-                Panel(apps, recent, expectRecents, hasPinned, fromRight, iconsLocked, onLaunch, onReorder, onOpenSettings, onDismiss)
+            // One transition for scrim and panel: `visible` only reports hidden once both have
+            // finished leaving, so the window is never removed mid-slide.
+            AnimatedVisibility(visibleState = visible, enter = EnterTransition.None, exit = ExitTransition.None) {
+                Box(Modifier.fillMaxSize()) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .animateEnterExit(enter = fadeIn(), exit = fadeOut())
+                            .background(Color.Black.copy(alpha = 0.3f)),
+                    )
+                    val offscreen = { width: Int ->
+                        if (fromRight) {
+                            width
+                        } else {
+                            -width
+                        }
+                    }
+                    Box(
+                        Modifier
+                            .align(if (fromRight) Alignment.TopEnd else Alignment.TopStart)
+                            .fillMaxHeight()
+                            .animateEnterExit(
+                                enter = slideInHorizontally(initialOffsetX = offscreen) + fadeIn(),
+                                exit = slideOutHorizontally(targetOffsetX = offscreen) + fadeOut(),
+                            ),
+                    ) {
+                        Panel(apps, recent, expectRecents, hasPinned, fromRight, iconsLocked, onLaunch, onReorder, onOpenSettings, onDismiss)
+                    }
+                }
             }
         }
     }

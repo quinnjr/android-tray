@@ -48,7 +48,7 @@ class OverlayHost(
     private var drawerState: MutableTransitionState<Boolean>? = null
     private var drawerClosed: (() -> Unit)? = null
     private var drawerParams: WindowManager.LayoutParams? = null
-    /** Screen size and navigation-bar insets for the drag in progress. */
+    /** Screen size and system-bar insets for the drag in progress. */
     private var dragBounds: Pair<Size, Rect>? = null
     private var fullscreen = false
     private val watcher = FullscreenWatcher(context, ::add, ::remove, ::setFullscreen)
@@ -201,8 +201,9 @@ class OverlayHost(
         Size(dm.widthPixels, dm.heightPixels)
     }
 
-    private fun navBarInsets(): Rect = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        val i = wm.currentWindowMetrics.windowInsets.getInsets(WindowInsets.Type.navigationBars())
+    /** The system bars' size on each edge (status bar, navigation bar), which the handle keeps clear of. */
+    private fun barInsets(): Rect = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        val i = wm.currentWindowMetrics.windowInsets.getInsets(WindowInsets.Type.systemBars())
         Rect(i.left, i.top, i.right, i.bottom)
     } else {
         // Before Android 11, the system bars' size comes from an attached overlay's insets.
@@ -256,17 +257,17 @@ class OverlayHost(
     private fun placeHandle(s: DrawerSettings, screen: Size) {
         handleParams.width = handleWidthPx
         handleParams.height = handleHeightPx
-        val nav = navBarInsets()
-        handleParams.x = handleX(s.side, screen.width, handleWidthPx, nav.left, nav.right)
-        handleParams.y = handleTop(s.yFraction, screen.height, handleHeightPx)
+        val bars = barInsets()
+        handleParams.x = handleX(s.side, screen.width, handleWidthPx, bars.left, bars.right)
+        handleParams.y = handleTop(s.yFraction, screen.height, handleHeightPx, bars.top, bars.bottom)
     }
 
     private fun dragHandleTo(rawX: Float, rawY: Float) {
         val view = handle ?: return
         // Measured once per drag: this runs for every touch move.
-        val (screen, nav) = dragBounds ?: (screenSize() to navBarInsets()).also { dragBounds = it }
-        handleParams.x = handleDragX(rawX, screen.width, handleWidthPx, nav.left, nav.right)
-        handleParams.y = handleTopAt(rawY, screen.height, handleHeightPx)
+        val (screen, bars) = dragBounds ?: (screenSize() to barInsets()).also { dragBounds = it }
+        handleParams.x = handleDragX(rawX, screen.width, handleWidthPx, bars.left, bars.right)
+        handleParams.y = handleTopAt(rawY, screen.height, handleHeightPx, bars.top, bars.bottom)
         update(view, handleParams)
     }
 
@@ -274,8 +275,9 @@ class OverlayHost(
         dragBounds = null
         val s = settings ?: return
         val screen = screenSize()
-        val top = handleTopAt(rawY, screen.height, handleHeightPx)
-        val fraction = yFractionFor(top, screen.height, handleHeightPx)
+        val bars = barInsets()
+        val top = handleTopAt(rawY, screen.height, handleHeightPx, bars.top, bars.bottom)
+        val fraction = yFractionFor(top, screen.height, handleHeightPx, bars.top, bars.bottom)
         // Snap immediately; the settings flow will confirm with the persisted values.
         showHandle(s.copy(side = side, yFraction = fraction))
         onHandleDropped(side, fraction)

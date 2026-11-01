@@ -24,9 +24,12 @@ import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
 import dev.quinnjr.android_drawer.TAG
 import dev.quinnjr.android_drawer.settings.AppKey
+import java.text.Collator
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filter
@@ -62,17 +65,30 @@ class AppCatalog(context: Context) {
     private val launcherApps = context.getSystemService(LauncherApps::class.java)
     private val userManager = context.getSystemService(UserManager::class.java)
 
-    /** Every launchable app, sorted by label; apps [cached] already has aren't loaded again. */
-    fun allApps(cached: (AppKey) -> LaunchableApp? = { null }): List<LaunchableApp> = activities()
-        .map { (key, info) -> cached(key) ?: info.toApp(key) }
-        .sortedBy { it.label.lowercase() }
+    /**
+     * Every launchable app, sorted by label as the user's language sorts it. Each app comes from
+     * [obtain], which returns a cached one or makes (and draws) it right away, so only one app's
+     * full icon is held at a time.
+     */
+    fun allApps(obtain: AppSource = MakeEach): List<LaunchableApp> {
+        val collator = Collator.getInstance()
+        return activities()
+            .map { (key, info) -> obtain(key) { info.toApp(key) } }
+            .map { collator.getCollationKey(it.label) to it }
+            .sortedBy { it.first }
+            .map { it.second }
+    }
 
     /**
      * The apps for [keys], in order; apps in a locked or paused profile are left out. Apps
      * [cached] already has are used as they are; for the rest only their packages are listed (not
-     * every installed app), and icons load only for these.
+     * every installed app), and they're made through [obtain].
      */
-    fun resolve(keys: List<AppKey>, cached: (AppKey) -> LaunchableApp? = { null }): List<LaunchableApp> {
+    fun resolve(
+        keys: List<AppKey>,
+        cached: (AppKey) -> LaunchableApp? = { null },
+        obtain: AppSource = MakeEach,
+    ): List<LaunchableApp> {
         // Checked for every key, cached or not: a cached app's profile may since have been
         // paused, locked or removed.
         val available = availableUsers()
@@ -90,10 +106,12 @@ class AppCatalog(context: Context) {
                 .getOrDefault(emptyList())
                 .forEach { info ->
                     val key = AppKey(info.componentName.flattenToString(), serial)
-                    if (key in group) found[key] = info
+                    if (key in group) {
+                        found[key] = info
+                    }
                 }
         }
-        return shown.mapNotNull { key -> known[key] ?: found[key]?.toApp(key) }
+        return shown.mapNotNull { key -> known[key] ?: found[key]?.let { info -> obtain(key) { info.toApp(key) } } }
     }
 
     /** Profiles whose apps can be shown now (unlocked, not paused), by serial number. */
@@ -108,8 +126,8 @@ class AppCatalog(context: Context) {
     fun recent(
         pinned: List<AppKey>,
         recents: RecentApps,
-        /** Already-loaded apps (e.g. with icons drawn on an earlier open), so their icons aren't reloaded. */
-        cached: (AppKey) -> LaunchableApp? = { null },
+        /** Gives cached apps (e.g. drawn on an earlier open) or makes them, so icons aren't reloaded. */
+        obtain: AppSource = MakeEach,
         limit: Int = RECENT_LIMIT,
     ): List<LaunchableApp> {
         // Callers check recents.hasAccess() first (the drawer needs it to lay out anyway).
@@ -138,7 +156,7 @@ class AppCatalog(context: Context) {
         }
         return picked.map { info ->
             val key = AppKey(info.componentName.flattenToString(), serial)
-            cached(key) ?: info.toApp(key)
+            obtain(key) { info.toApp(key) }
         }
     }
 
@@ -146,11 +164,19 @@ class AppCatalog(context: Context) {
     private fun personalEntries(): Map<String, List<LauncherActivityInfo>> {
         entriesCache?.let { return it }
         val generation = entriesGeneration
-        val entries = runCatching { launcherApps.getActivityList(null, Process.myUserHandle()) }
-            .getOrDefault(emptyList())
-            .groupBy { it.componentName.packageName }
+        val entries = try {
+            launcherApps.getActivityList(null, Process.myUserHandle()).groupBy { it.componentName.packageName }
+        } catch (e: Exception) {
+            // Not cached: a passing failure mustn't leave recents empty until the next app change.
+            Log.w(TAG, "Could not list apps", e)
+            return emptyMap()
+        }
         // Don't store a list read before an invalidate() that happened while reading it.
-        synchronized(entriesLock) { if (generation == entriesGeneration) entriesCache = entries }
+        synchronized(entriesLock) {
+            if (generation == entriesGeneration) {
+                entriesCache = entries
+            }
+        }
         return entries
     }
 
@@ -207,6 +233,15 @@ class AppCatalog(context: Context) {
 /** How long app changes must settle before a burst of them (e.g. many updates) is acted on once. */
 private const val APPS_CHANGED_DEBOUNCE_MS = 500L
 
+/**
+ * How a catalog gets each app: `obtain(key) { make() }` returns a cached app for [AppKey] or makes
+ * one (and may draw its icon) with the given function.
+ */
+typealias AppSource = (key: AppKey, make: () -> LaunchableApp) -> LaunchableApp
+
+/** Makes every app afresh; no cache. */
+val MakeEach: AppSource = { _, make -> make() }
+
 /** Events with a burst collapsed into one once it settles. */
 @OptIn(FlowPreview::class)
 fun <T> Flow<T>.settled(): Flow<T> = debounce(APPS_CHANGED_DEBOUNCE_MS)
@@ -220,12 +255,11 @@ fun appChanges(
     context: Context,
     relevant: (pkg: String?) -> Boolean = { true },
     onChange: (pkg: String?) -> Unit = {},
-): Flow<Unit> = appsChanged(context)
-    .onEach(onChange)
-    .filter(relevant)
-    .settled()
-    .map { }
-    .onStart { emit(Unit) }
+): Flow<Unit> = appsChanged(context).onEach(onChange).reloads(relevant)
+
+/** These app changes as reloads: a burst of [relevant] ones gives one, and there's one to start. */
+fun Flow<String?>.reloads(relevant: (pkg: String?) -> Boolean = { true }): Flow<Unit> =
+    filter(relevant).settled().map { }.onStart { emit(Unit) }
 
 /** Whether this key belongs to [pkg]. */
 fun AppKey.isIn(pkg: String): Boolean = this.pkg == pkg
@@ -263,4 +297,5 @@ fun appsChanged(context: Context): Flow<String?> = callbackFlow {
         launcherApps.unregisterCallback(callback)
         context.unregisterReceiver(profileReceiver)
     }
-}
+    // Unbounded: a big update burst must not drop events, as each one invalidates caches.
+}.buffer(Channel.UNLIMITED)

@@ -6,11 +6,12 @@ import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.quinnjr.android_drawer.apps.AppCatalog
+import dev.quinnjr.android_drawer.apps.AppSource
 import dev.quinnjr.android_drawer.apps.DrawConfig
 import dev.quinnjr.android_drawer.apps.DrawnAppCache
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.appsChanged
-import dev.quinnjr.android_drawer.apps.settled
+import dev.quinnjr.android_drawer.apps.reloads
 import dev.quinnjr.android_drawer.overlay.clampHandleHeightDp
 import dev.quinnjr.android_drawer.service.EdgeService
 import dev.quinnjr.android_drawer.settings.AppKey
@@ -20,8 +21,6 @@ import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.movedAmongShown
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -33,8 +32,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
-import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -59,9 +58,10 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     private val reloads: Flow<Unit> = appsChanged(app)
         .onEach(icons::onAppChanged)
         .shareIn(viewModelScope, SharingStarted.Eagerly)
-        .settled()
-        .map { }
-        .onStart { emit(Unit) }
+        .reloads()
+
+    /** The pinned apps last loaded, which the icon cache is trimmed back to after the picker. */
+    @Volatile private var pinnedKeys: Set<AppKey> = emptySet()
 
     /** The pinned apps, for the settings screen; null while loading. */
     val chosenApps: StateFlow<List<LaunchableApp>?> = combine(
@@ -69,13 +69,18 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         reloads,
         drawConfig.filterNotNull(),
     ) { keys, _, config -> keys to config }
-        .mapLatest { (keys, config) -> drawn(config) { cached -> catalog.resolve(keys, cached) } }
+        .mapLatest { (keys, config) ->
+            pinnedKeys = keys.toSet()
+            drawn(config) { obtain -> catalog.resolve(keys, cached = { icons[it] }, obtain = obtain) }
+        }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** Every launchable app, for the app picker (only loaded while it is shown); null while loading. */
     val allApps: StateFlow<List<LaunchableApp>?> = combine(reloads, drawConfig.filterNotNull()) { _, config -> config }
-        .mapLatest { config -> drawn(config) { cached -> catalog.allApps(cached) } }
+        .mapLatest { config -> drawn(config) { obtain -> catalog.allApps(obtain) } }
+        // Once the picker is gone, keep only the pinned apps' icons rather than every app's.
+        .onCompletion { icons.retain(pinnedKeys) }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
@@ -83,17 +88,9 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
      * Loads apps with [load] and draws their icons, off the main thread rather than while lists
      * scroll; apps already drawn come from [icons], and a newer change cancels the work in progress.
      */
-    private suspend fun drawn(
-        config: DrawConfig,
-        load: (cached: (AppKey) -> LaunchableApp?) -> List<LaunchableApp>,
-    ): List<LaunchableApp> {
+    private suspend fun drawn(config: DrawConfig, load: (obtain: AppSource) -> List<LaunchableApp>): List<LaunchableApp> {
         icons.use(config)
-        // Taken before reading the apps, so an icon of an app that changes meanwhile isn't kept.
-        val ticket = icons.begin()
-        return load { icons[it] }.map { app ->
-            currentCoroutineContext().ensureActive()
-            icons.draw(app, ticket)
-        }
+        return icons.load(load)
     }
 
     /** Call from the activity on creation (including after a configuration change). */

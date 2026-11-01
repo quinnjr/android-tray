@@ -53,4 +53,19 @@ class HandleGeometryTest {
         assertEquals(0, handleTopAt(10f, 2000, 200))
         assertEquals(1800, handleTopAt(1990f, 2000, 200))
     }
+
+    @Test
+    fun `handle stays clear of the status and navigation bars`() {
+        // 2000px screen, 100px status bar, 150px navigation bar, 200px handle.
+        assertEquals(100, handleTop(0f, 2000, 200, insetTop = 100, insetBottom = 150))
+        assertEquals(2000 - 150 - 200, handleTop(1f, 2000, 200, insetTop = 100, insetBottom = 150))
+        assertEquals(100, handleTopAt(10f, 2000, 200, insetTop = 100, insetBottom = 150))
+        assertEquals(2000 - 150 - 200, handleTopAt(1990f, 2000, 200, insetTop = 100, insetBottom = 150))
+    }
+
+    @Test
+    fun `yFractionFor inverts handleTop with insets`() {
+        val top = handleTop(0.4f, 2000, 200, insetTop = 100, insetBottom = 150)
+        assertEquals(0.4f, yFractionFor(top, 2000, 200, insetTop = 100, insetBottom = 150), 0.001f)
+    }
 }

@@ -7,12 +7,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HandleGestureTest {
-    private fun gesture(side: Side) = HandleGesture(
+    private fun gesture(side: Side, screenWidth: Int = 1080) = HandleGesture(
         side = side,
         touchSlopPx = 16f,
         openDistancePx = 60f,
         longPressMs = 400L,
-        screenWidth = 1080,
+        screenWidth = screenWidth,
     )
 
     @Test
@@ -116,7 +116,7 @@ class HandleGestureTest {
         val g = gesture(Side.RIGHT)
         assertEquals(Side.RIGHT, g.sideAt(900f))
         // After rotating to a 2340px-wide screen, x=900 is in the left half.
-        assertEquals(Side.LEFT, g.sideAt(900f, screenWidth = 2340))
+        assertEquals(Side.LEFT, gesture(Side.RIGHT, screenWidth = 2340).sideAt(900f))
     }
 
     @Test

@@ -43,7 +43,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
@@ -220,22 +219,20 @@ class EdgeService : LifecycleService() {
 
     /** The pinned apps for [keys], in order, with icons; drawn icons come from the cache. */
     private suspend fun pinnedApps(keys: List<AppKey>): List<LaunchableApp> = withContext(Dispatchers.Default) {
-        val ticket = pinnedIcons.begin()
         loadSafely("pinned apps") {
-            catalog.resolve(keys, cached = { pinnedIcons[it] }).map { ensureActive(); pinnedIcons.draw(it, ticket) }
+            pinnedIcons.load { obtain -> catalog.resolve(keys, cached = { pinnedIcons[it] }, obtain = obtain) }
         }
     }
 
     private suspend fun recentApps(pinned: List<AppKey>): List<LaunchableApp> = withContext(Dispatchers.Default) {
         val start = SystemClock.elapsedRealtime()
-        val ticket = recentIcons.begin()
         loadSafely("recent apps") {
-            catalog.recent(pinned, recents, cached = { recentIcons[it] }).map { ensureActive(); recentIcons.draw(it, ticket) }
+            recentIcons.load { obtain -> catalog.recent(pinned, recents, obtain) }
         }.also { Log.d(TAG, "Recent apps read in ${SystemClock.elapsedRealtime() - start} ms") }
     }
 
     /** Runs [load]; a failure (e.g. a profile removed meanwhile) is logged and gives no apps rather than a crash. */
-    private inline fun loadSafely(what: String, load: () -> List<LaunchableApp>): List<LaunchableApp> = try {
+    private suspend inline fun loadSafely(what: String, load: () -> List<LaunchableApp>): List<LaunchableApp> = try {
         load()
     } catch (e: CancellationException) {
         throw e
