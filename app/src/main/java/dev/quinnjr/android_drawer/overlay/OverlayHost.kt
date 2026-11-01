@@ -85,6 +85,7 @@ class OverlayHost(
     fun openDrawer(
         apps: List<LaunchableApp>,
         recent: State<List<LaunchableApp>?>,
+        expectRecents: Boolean,
         onLaunch: (LaunchableApp, Rect?) -> Unit,
         onReorder: (List<AppKey>) -> Unit,
         onOpenSettings: () -> Unit,
@@ -101,6 +102,7 @@ class OverlayHost(
             DrawerPanel(
                 apps = apps,
                 recent = recent,
+                expectRecents = expectRecents,
                 side = s.side,
                 visible = state,
                 iconsLocked = s.iconsLocked,

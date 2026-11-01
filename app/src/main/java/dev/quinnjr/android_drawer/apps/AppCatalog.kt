@@ -48,6 +48,7 @@ fun List<LaunchableApp>.withBitmaps(sizePx: Int): List<LaunchableApp> =
 
 class AppCatalog(context: Context) {
     private val packageName = context.packageName
+    @Volatile private var entriesCache: Map<String, List<LauncherActivityInfo>>? = null
     private val launcherApps = context.getSystemService(LauncherApps::class.java)
     private val userManager = context.getSystemService(UserManager::class.java)
 
@@ -68,30 +69,40 @@ class AppCatalog(context: Context) {
         if (!recents.hasAccess()) return emptyList()
         val me = Process.myUserHandle()
         val serial = userManager.getSerialNumberForUser(me)
-        val byPackage = runCatching { launcherApps.getActivityList(null, me) }
-            .getOrDefault(emptyList())
-            .groupBy { it.componentName.packageName }
+        val byPackage = personalEntries()
         val excluded = recents.homePackages() + packageName
         val pinnedHere = pinned.filter { it.userSerial == serial }.mapTo(HashSet()) { it.component }
-        fun choose(history: UsageHistory): List<LauncherActivityInfo> = history.pick(excluded, byPackage.keys)
-            .asSequence()
-            .map { pkg ->
-                // Prefer the entry point actually used, for apps with several (e.g. Google and Lens).
-                val entries = byPackage.getValue(pkg)
-                entries.firstOrNull { it.componentName.className == history.lastActivity(pkg) } ?: entries.first()
-            }
-            .filter { it.componentName.flattenToString() !in pinnedHere }
-            .take(limit)
-            .toList()
+        fun LauncherActivityInfo.isPinned() = componentName.flattenToString() in pinnedHere
 
-        // A few hours almost always fill the slots; only read the older span when they don't.
-        val now = System.currentTimeMillis()
-        val latest = recents.events(now - SHORT_LOOKBACK_MS, now)
-        var picked = choose(UsageHistory().replay(latest))
-        if (picked.size < limit) {
-            picked = choose(UsageHistory().replay(recents.events(now - LONG_LOOKBACK_MS, now - SHORT_LOOKBACK_MS) + latest))
+        val picked = recents.withHistory { history ->
+            history.pick(excluded, byPackage.keys).asSequence()
+                .mapNotNull { pkg ->
+                    val entries = byPackage.getValue(pkg)
+                    val used = entries.firstOrNull { it.componentName.className == history.lastActivity(pkg) }
+                    when {
+                        // Show the entry point actually used (e.g. Lens rather than Google), unless pinned.
+                        used != null -> used.takeUnless { it.isPinned() }
+                        // Used through an inner screen, so the entry is unknown: skip if any is pinned.
+                        entries.any { it.isPinned() } -> null
+                        else -> entries.first()
+                    }
+                }
+                .take(limit)
+                .toList()
         }
         return picked.map { info -> info.toApp(AppKey(info.componentName.flattenToString(), serial)) }
+    }
+
+    /** Personal-profile launcher entries by package, cached until [invalidate]. */
+    private fun personalEntries(): Map<String, List<LauncherActivityInfo>> = entriesCache ?: runCatching {
+        launcherApps.getActivityList(null, Process.myUserHandle())
+    }.getOrDefault(emptyList())
+        .groupBy { it.componentName.packageName }
+        .also { entriesCache = it }
+
+    /** Drops cached launcher entries; call when apps are installed, removed or changed. */
+    fun invalidate() {
+        entriesCache = null
     }
 
     private fun activities(): List<Pair<AppKey, LauncherActivityInfo>> = launcherApps.profiles
@@ -126,8 +137,6 @@ class AppCatalog(context: Context) {
         /** How many recent apps the drawer shows. */
         const val RECENT_LIMIT = 4
         private const val TAG = "EdgeDrawer"
-        private const val SHORT_LOOKBACK_MS = 6L * 60 * 60 * 1000
-        private const val LONG_LOOKBACK_MS = 3L * 24 * 60 * 60 * 1000
     }
 }
 

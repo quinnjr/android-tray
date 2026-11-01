@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
+import android.os.SystemClock
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
@@ -32,7 +33,7 @@ class HandleView(
     private var dragging = false
 
     private val longPress = Runnable {
-        if (gesture?.tick(System.currentTimeMillis()) == true) startDrag()
+        if (gesture?.tick(SystemClock.uptimeMillis()) == true) startDrag()
     }
 
     fun configure(side: Side, color: Long, alpha: Float, screenWidth: Int) {
@@ -72,8 +73,8 @@ class HandleView(
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val g = gesture ?: return false
-        // Wall-clock time keeps tick() (posted runnable) and event timestamps on one clock.
-        val now = System.currentTimeMillis()
+        // Uptime, like postDelayed: the long-press runnable then never fires "early" for tick().
+        val now = event.eventTime
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 g.down(event.rawX, event.rawY, now)

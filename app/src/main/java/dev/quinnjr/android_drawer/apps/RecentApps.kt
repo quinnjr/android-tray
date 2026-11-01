@@ -13,6 +13,27 @@ import android.os.Process
 class RecentApps(private val context: Context) {
     private val usage = context.getSystemService(UsageStatsManager::class.java)
     private val appOps = context.getSystemService(AppOpsManager::class.java)
+    private val lock = Any()
+    private var history: UsageHistory? = null
+    private var builtAt = 0L
+    private var readUntil = 0L
+
+    /**
+     * Runs [block] on the usage history of the last few days. Only events since the previous
+     * call are read; the history is rebuilt from scratch once a day so it stays bounded.
+     */
+    internal fun <T> withHistory(now: Long = System.currentTimeMillis(), block: (UsageHistory) -> T): T = synchronized(lock) {
+        var h = history
+        if (h == null || now - builtAt > REBUILD_MS || now < readUntil) {
+            h = UsageHistory().replay(events(now - LOOKBACK_MS, now))
+            builtAt = now
+        } else {
+            h.replay(events(readUntil, now))
+        }
+        history = h
+        readUntil = now
+        block(h)
+    }
 
     fun hasAccess(): Boolean {
         val mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName)
@@ -58,6 +79,8 @@ class RecentApps(private val context: Context) {
 
     private companion object {
         const val SYSTEM_RESOLVER = "android"
+        const val LOOKBACK_MS = 3L * 24 * 60 * 60 * 1000
+        const val REBUILD_MS = 24L * 60 * 60 * 1000
     }
 }
 

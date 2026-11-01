@@ -13,9 +13,12 @@ import androidx.compose.ui.unit.dp
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.toImageBitmap
 
+/** Icon size in the settings screen and app picker. */
+val SETTINGS_ICON_SIZE = 40.dp
+
 /** An app's icon at [size]; uses the pre-rendered bitmap when there is one. */
 @Composable
-fun AppIcon(app: LaunchableApp, modifier: Modifier = Modifier, size: Dp = 40.dp) {
+fun AppIcon(app: LaunchableApp, modifier: Modifier = Modifier, size: Dp = SETTINGS_ICON_SIZE) {
     val sizePx = with(LocalDensity.current) { size.roundToPx() }
     val bitmap = remember(app.key, app.icon, app.bitmap, sizePx) {
         app.bitmap ?: app.icon?.toImageBitmap(sizePx)

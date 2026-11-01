@@ -103,6 +103,8 @@ fun DrawerPanel(
     apps: List<LaunchableApp>,
     /** Recently used apps; null while they're still being read (their space is kept meanwhile). */
     recent: State<List<LaunchableApp>?>,
+    /** Whether to show the recents section at all (usage access granted). */
+    expectRecents: Boolean,
     side: Side,
     visible: MutableTransitionState<Boolean>,
     iconsLocked: Boolean,
@@ -134,7 +136,7 @@ fun DrawerPanel(
                 enter = slideInHorizontally { if (fromRight) it else -it } + fadeIn(),
                 exit = slideOutHorizontally { if (fromRight) it else -it } + fadeOut(),
             ) {
-                Panel(apps, recent, fromRight, iconsLocked, onLaunch, onReorder, onOpenSettings, onDismiss)
+                Panel(apps, recent, expectRecents, fromRight, iconsLocked, onLaunch, onReorder, onOpenSettings, onDismiss)
             }
         }
     }
@@ -144,6 +146,8 @@ fun DrawerPanel(
 private fun Panel(
     apps: List<LaunchableApp>,
     recent: State<List<LaunchableApp>?>,
+    /** Whether to show the recents section at all (usage access granted). */
+    expectRecents: Boolean,
     fromRight: Boolean,
     iconsLocked: Boolean,
     onLaunch: (LaunchableApp, Rect?) -> Unit,
@@ -153,6 +157,7 @@ private fun Panel(
 ) {
     val dismissPx = with(LocalDensity.current) { DISMISS_DRAG.toPx() }
     val offset = remember { Animatable(0f) }
+    val dragX = remember { floatArrayOf(0f) }
     val scope = rememberCoroutineScope()
 
     Surface(
@@ -170,23 +175,25 @@ private fun Panel(
             .clickable(remember { MutableInteractionSource() }, indication = null) {}
             .pointerInput(fromRight) {
                 detectHorizontalDragGestures(
+                    onDragStart = { dragX[0] = offset.value },
                     onDragEnd = {
-                        val towardEdge = if (fromRight) offset.value else -offset.value
+                        val towardEdge = if (fromRight) dragX[0] else -dragX[0]
                         if (towardEdge > dismissPx) onDismiss() else scope.launch { offset.animateTo(0f) }
                     },
                     onDragCancel = { scope.launch { offset.animateTo(0f) } },
                 ) { _, dx ->
+                    // Accumulate here, not from offset.value: snapTo runs later, so several drag
+                    // events in a row would otherwise read the same stale value and drop deltas.
                     // Only follow drags toward the edge the panel came from.
-                    val next = offset.value + dx
-                    scope.launch { offset.snapTo(if (fromRight) next.coerceAtLeast(0f) else next.coerceAtMost(0f)) }
+                    val next = dragX[0] + dx
+                    dragX[0] = if (fromRight) next.coerceAtLeast(0f) else next.coerceAtMost(0f)
+                    scope.launch { offset.snapTo(dragX[0]) }
                 }
             },
     ) {
         Column(Modifier.padding(top = 16.dp)) {
             // Fixed above the scrolling pinned apps, so recents arriving late never shift or hide them.
-            // Its space is decided once, when the drawer opens: kept if recents are expected.
-            val showRecents = remember { recent.value == null }
-            if (showRecents) RecentSection(recent.value, onLaunch)
+            if (expectRecents) RecentSection(recent.value, onLaunch)
             Box(Modifier.weight(1f)) {
                 if (apps.isEmpty()) {
                     NoApps(onOpenSettings, Modifier.fillMaxSize())
@@ -256,7 +263,7 @@ private fun PinnedGrid(
     var pointer by remember { mutableStateOf(Offset.Zero) }
     var grab by remember { mutableStateOf(Offset.Zero) }
     // Auto-scroll only once the lifted app has actually been moved.
-    var moved by remember { mutableStateOf(false) }
+    var hasMoved by remember { mutableStateOf(false) }
 
     fun appAt(position: Offset): LazyGridItemInfo? = gridState.layoutInfo.visibleItemsInfo.firstOrNull {
         position.x >= it.offset.x && position.x < it.offset.x + it.size.width &&
@@ -285,7 +292,7 @@ private fun PinnedGrid(
     LaunchedEffect(dragging != null) {
         while (dragging != null) {
             withFrameNanos { }
-            if (!moved) continue
+            if (!hasMoved) continue
             val height = gridState.layoutInfo.viewportSize.height
             val delta = when {
                 pointer.y < edgePx -> -AUTOSCROLL_STEP_PX
@@ -305,7 +312,7 @@ private fun PinnedGrid(
                     val info = appAt(start) ?: return@detectDragGesturesAfterLongPress
                     dragging = order[info.index].key
                     pointer = start
-                    moved = false
+                    hasMoved = false
                     grab = start - info.offset.toOffset()
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 },
@@ -315,7 +322,7 @@ private fun PinnedGrid(
                 if (dragging == null) return@detectDragGesturesAfterLongPress
                 change.consume()
                 pointer = change.position
-                moved = true
+                hasMoved = true
                 followPointer()
             }
         }

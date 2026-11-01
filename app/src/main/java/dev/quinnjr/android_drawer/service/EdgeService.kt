@@ -26,14 +26,16 @@ import dev.quinnjr.android_drawer.R
 import dev.quinnjr.android_drawer.apps.AppCatalog
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.RecentApps
+import dev.quinnjr.android_drawer.apps.appsChanged
 import dev.quinnjr.android_drawer.apps.withBitmaps
 import dev.quinnjr.android_drawer.overlay.DRAWER_ICON_SIZE
-import dev.quinnjr.android_drawer.apps.appsChanged
 import dev.quinnjr.android_drawer.overlay.OverlayHost
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.withVisibleOrder
 import dev.quinnjr.android_drawer.ui.MainActivity
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -48,7 +50,6 @@ import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.roundToInt
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class EdgeService : LifecycleService() {
@@ -70,6 +71,8 @@ class EdgeService : LifecycleService() {
     private val density = MutableStateFlow(0f)
     private var opening = false
     private var recentJob: Job? = null
+    /** Recent apps with icons already drawn, so reopening the drawer doesn't redraw them. */
+    private val recentIcons = ConcurrentHashMap<AppKey, LaunchableApp>()
     private var foreground = false
     private var retryScheduled = false
 
@@ -123,6 +126,13 @@ class EdgeService : LifecycleService() {
                 }
             }
         }
+        // Installed, removed or changed apps invalidate the cached launcher entries and icons.
+        lifecycleScope.launch {
+            appsChanged(this@EdgeService).collect {
+                catalog.invalidate()
+                recentIcons.clear()
+            }
+        }
         // Resolve icons off the main thread ahead of time so the drawer opens instantly. Keyed by
         // the set of pinned apps: reordering needs no new resolve.
         lifecycleScope.launch {
@@ -151,7 +161,8 @@ class EdgeService : LifecycleService() {
         opening = true
         // Recents depend on what was just used, so they're read on every open and fill in when
         // ready; until then the drawer keeps their space if it expects any.
-        val recent = mutableStateOf<List<LaunchableApp>?>(if (recents.hasAccess()) null else emptyList())
+        val expectRecents = recents.hasAccess()
+        val recent = mutableStateOf<List<LaunchableApp>?>(null)
         lifecycleScope.launch {
             val keys: List<AppKey>
             try {
@@ -159,6 +170,7 @@ class EdgeService : LifecycleService() {
                 host.openDrawer(
                     apps = pinnedApps(keys),
                     recent = recent,
+                    expectRecents = expectRecents,
                     onLaunch = { app, bounds -> catalog.launch(app, bounds) },
                     onReorder = { shownOrder ->
                         lifecycleScope.launch { repo.update { it.copy(apps = it.apps.withVisibleOrder(shownOrder)) } }
@@ -171,10 +183,11 @@ class EdgeService : LifecycleService() {
                 opening = false
             }
             recentJob?.cancel()
+            if (!expectRecents) return@launch
             recentJob = lifecycleScope.launch {
                 recent.value = withContext(Dispatchers.Default) {
                     val start = SystemClock.elapsedRealtime()
-                    runCatching { catalog.recent(keys, recents).withBitmaps(iconSizePx()) }
+                    runCatching { catalog.recent(keys, recents).map(::withRecentIcon) }
                         .onFailure { Log.w(TAG, "Could not read recent apps", it) }
                         .getOrDefault(emptyList())
                         .also { Log.d(TAG, "Recent apps read in ${SystemClock.elapsedRealtime() - start} ms") }
@@ -209,9 +222,17 @@ class EdgeService : LifecycleService() {
         }
     }
 
+    /** [app] with its icon drawn, reusing the drawing from an earlier open when there is one. */
+    private fun withRecentIcon(app: LaunchableApp): LaunchableApp {
+        if (recentIcons.size > MAX_RECENT_ICONS) recentIcons.clear()
+        return recentIcons.getOrPut(app.key) { listOf(app).withBitmaps(iconSizePx()).first() }
+    }
+
     private fun onDisplayChanged() {
         host.relayout()
-        density.value = overlayContext.resources.displayMetrics.density
+        val newDensity = overlayContext.resources.displayMetrics.density
+        if (newDensity != density.value) recentIcons.clear()
+        density.value = newDensity
     }
 
     private fun iconSizePx(): Int = (DRAWER_ICON_SIZE.value * overlayContext.resources.displayMetrics.density).roundToInt()
@@ -270,6 +291,7 @@ class EdgeService : LifecycleService() {
         private const val CHANNEL_ID = "edge_handle"
         private const val NOTIFICATION_ID = 1
         private const val FOREGROUND_RETRY_MS = 500L
+        private const val MAX_RECENT_ICONS = 32
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, EdgeService::class.java))

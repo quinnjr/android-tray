@@ -7,12 +7,14 @@ import androidx.lifecycle.viewModelScope
 import dev.quinnjr.android_drawer.apps.AppCatalog
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.appsChanged
+import dev.quinnjr.android_drawer.apps.withBitmaps
 import dev.quinnjr.android_drawer.overlay.clampHandleHeightDp
 import dev.quinnjr.android_drawer.service.EdgeService
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.movedAmongShown
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +28,7 @@ import kotlinx.coroutines.launch
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = SettingsRepository(app)
     private val catalog = AppCatalog(app)
+    private val iconSizePx = (SETTINGS_ICON_SIZE.value * app.resources.displayMetrics.density).roundToInt()
 
     val settings: StateFlow<DrawerSettings?> =
         repo.settings.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -33,7 +36,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     /** All launchable apps; null while loading. */
     val allApps: StateFlow<List<LaunchableApp>?> = appsChanged(app)
         .onStart { emit(Unit) }
-        .map { catalog.allApps() }
+        // Icons drawn here, off the main thread, rather than while the list scrolls.
+        .map { catalog.allApps().withBitmaps(iconSizePx) }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
