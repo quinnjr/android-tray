@@ -80,15 +80,16 @@ class AppCatalog(context: Context) {
     }
 
     /**
-     * The apps for [keys], in order; apps in a locked or paused profile are left out. Apps
-     * [cached] already has are used as they are; for the rest only their packages are listed (not
-     * every installed app), and they're made through [obtain].
+     * The apps for [keys], in order, and which keys are unavailable (locked, paused or removed
+     * profile; app uninstalled). An app that merely failed to load is in neither. Apps [cached]
+     * already has are used as they are; for the rest only their packages are listed (not every
+     * installed app), and they're made through [obtain].
      */
     fun resolve(
         keys: List<AppKey>,
         cached: (AppKey) -> LaunchableApp? = { null },
         obtain: AppSource = MakeEach,
-    ): List<LaunchableApp> {
+    ): Resolved {
         // Checked for every key, cached or not: a cached app's profile may since have been
         // paused, locked or removed.
         val available = availableUsers()
@@ -98,20 +99,28 @@ class AppCatalog(context: Context) {
         val wanted = shown.filter { it !in known }
             .groupBy { it.userSerial to it.pkg }
             .mapValues { it.value.toHashSet() }
+        // Packages whose listing failed: their apps can't be called unavailable.
+        val unknown = HashSet<AppKey>()
         for ((where, group) in wanted) {
             val (serial, pkg) = where
             val user = available.getValue(serial)
-            runCatching { launcherApps.getActivityList(pkg, user) }
-                .onFailure { Log.w(TAG, "Could not list $pkg for $user", it) }
-                .getOrDefault(emptyList())
-                .forEach { info ->
-                    val key = AppKey(info.componentName.flattenToString(), serial)
-                    if (key in group) {
-                        found[key] = info
-                    }
+            val entries = try {
+                launcherApps.getActivityList(pkg, user)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not list $pkg for $user", e)
+                unknown += group
+                continue
+            }
+            for (info in entries) {
+                val key = AppKey(info.componentName.flattenToString(), serial)
+                if (key in group) {
+                    found[key] = info
                 }
+            }
         }
-        return shown.mapNotNull { key -> known[key] ?: found[key]?.let { info -> obtainOrSkip(obtain, key) { info.toApp(key) } } }
+        val apps = shown.mapNotNull { key -> known[key] ?: found[key]?.let { info -> obtainOrSkip(obtain, key) { info.toApp(key) } } }
+        val unavailable = keys.filterTo(HashSet()) { it.userSerial !in available || (it !in known && it !in found && it !in unknown) }
+        return Resolved(apps, unavailable)
     }
 
     /** Profiles whose apps can be shown now (unlocked, not paused), by serial number. */
@@ -239,6 +248,18 @@ class AppCatalog(context: Context) {
 
 /** How long app changes must settle before a burst of them (e.g. many updates) is acted on once. */
 private const val APPS_CHANGED_DEBOUNCE_MS = 500L
+
+/** Resolved pinned apps, and the keys that are definitely unavailable (not merely failed to load). */
+data class Resolved(val apps: List<LaunchableApp>, val unavailable: Set<AppKey>)
+
+/**
+ * The pinned apps for [keys] through [cache] (drawn ones reused, others drawn and kept); null if
+ * loading failed altogether. Shared by the drawer and the settings screen.
+ */
+suspend fun AppCatalog.resolveDrawn(cache: DrawnAppCache, keys: List<AppKey>): Resolved? =
+    orOnFailure("pinned apps", null) {
+        cache.load { obtain -> resolve(keys, cached = { cache[it] }, obtain = obtain) }
+    }
 
 /**
  * How a catalog gets each app: `obtain(key) { make() }` returns a cached app for [AppKey] or makes

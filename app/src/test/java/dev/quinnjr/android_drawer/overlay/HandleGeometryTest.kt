@@ -68,4 +68,14 @@ class HandleGeometryTest {
         val top = handleTop(0.4f, 2000, 200, insetTop = 100, insetBottom = 150)
         assertEquals(0.4f, yFractionFor(top, 2000, 200, insetTop = 100, insetBottom = 150), 0.001f)
     }
+
+    @Test
+    fun `a stored position gives back exactly the same top`() {
+        for (range in 1..300) {
+            for (top in 0..range) {
+                val fraction = yFractionFor(top, range + 100, 100)
+                assertEquals("top $top, range $range", top, handleTop(fraction, range + 100, 100))
+            }
+        }
+    }
 }

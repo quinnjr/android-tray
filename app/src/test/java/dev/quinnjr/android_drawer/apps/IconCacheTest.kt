@@ -62,12 +62,15 @@ class IconCacheTest {
     }
 
     @Test
-    fun `retain drops other keys without rejecting values being drawn`() {
+    fun `retain drops other keys and rejects them if drawn meanwhile, but not kept ones`() {
         val cache = IconCache<String, String>()
         val generation = cache.generation()
         cache.put("a", "A", generation)
         cache.put("b", "B", generation)
-        cache.retain(setOf("a"))
+        cache.retain(setOf("a", "c"))
+        assertNull(cache["b"])
+        // "b" was being drawn when it was dropped (e.g. unpinned): not stored again.
+        cache.put("b", "B", generation)
         assertNull(cache["b"])
         cache.put("c", "C", generation)
         assertEquals("C", cache["c"])

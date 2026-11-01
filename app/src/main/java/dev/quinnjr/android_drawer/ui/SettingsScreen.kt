@@ -140,7 +140,16 @@ fun SettingsScreen(
             }
             // Pinned apps that can't be shown now (e.g. a paused work profile): say so, and let
             // them be unpinned, since the picker can't show them either.
-            // Counted from the same snapshot as the list, so loading apps never count as missing.
+            if (chosenApps?.failed == true) {
+                item {
+                    Text(
+                        "Couldn't load your pinned apps right now.",
+                        Modifier.padding(horizontal = 16.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+            // From the same load as the list; apps that merely failed to load never count.
             val unavailable = chosenApps?.unavailable.orEmpty()
             if (unavailable.isNotEmpty()) {
                 item {

@@ -44,7 +44,7 @@ class DrawnAppCache(maxSize: Int = Int.MAX_VALUE) {
      * size are taken together before anything is read, so an app whose data changes meanwhile is
      * drawn but not kept. Stops early if the calling coroutine is cancelled.
      */
-    suspend fun load(load: (obtain: AppSource) -> List<LaunchableApp>): List<LaunchableApp> {
+    suspend fun <T> load(load: (obtain: AppSource) -> T): T {
         val (generation, iconSizePx) = synchronized(lock) {
             cache.generation() to checkNotNull(config) { "No DrawConfig set" }.iconSizePx
         }

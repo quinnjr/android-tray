@@ -42,6 +42,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -107,7 +108,8 @@ private val LABEL_COLOR = Color.White
  */
 @Composable
 fun DrawerPanel(
-    apps: List<LaunchableApp>,
+    /** The pinned apps; null while they're still loading. */
+    apps: State<List<LaunchableApp>?>,
     /** Recently used apps; null while they're still being read (their space is kept meanwhile). */
     recent: State<List<LaunchableApp>?>,
     /** Whether to show the recents section at all (usage access granted). */
@@ -179,7 +181,7 @@ fun DrawerPanel(
 
 @Composable
 private fun Panel(
-    apps: List<LaunchableApp>,
+    apps: State<List<LaunchableApp>?>,
     recent: State<List<LaunchableApp>?>,
     /** Whether to show the recents section at all (usage access granted). */
     expectRecents: Boolean,
@@ -247,10 +249,14 @@ private fun Panel(
                     }
                 }
                 Box(Modifier.weight(1f)) {
-                    if (apps.isEmpty()) {
-                        NoApps(hasPinned, onOpenSettings, Modifier.fillMaxSize())
-                    } else {
-                        PinnedGrid(apps, iconsLocked, onLaunch, onReorder)
+                    val pinned = apps.value
+                    when {
+                        pinned == null -> CircularProgressIndicator(
+                            color = LABEL_COLOR,
+                            modifier = Modifier.align(Alignment.Center).size(32.dp),
+                        )
+                        pinned.isEmpty() -> NoApps(hasPinned, onOpenSettings, Modifier.fillMaxSize())
+                        else -> PinnedGrid(pinned, iconsLocked, onLaunch, onReorder)
                     }
                 }
                 IconButton(

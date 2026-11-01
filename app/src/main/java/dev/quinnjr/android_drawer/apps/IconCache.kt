@@ -39,11 +39,12 @@ class IconCache<K, V>(private val maxSize: Int = Int.MAX_VALUE) {
     }
 
     /**
-     * Keeps only the entries for [keys], e.g. the apps still pinned. Their data isn't stale, so
-     * unlike [forget] this doesn't reject values being drawn.
+     * Keeps only the entries for [keys], e.g. the apps still pinned. Values for other keys being
+     * drawn meanwhile (an app just unpinned) are rejected too; those for [keys] are still kept.
      */
-    fun retain(keys: Set<K>) = synchronized(lock) {
-        entries.keys.retainAll(keys)
+    fun retain(keys: Set<K>) {
+        val kept = keys.toHashSet()
+        forget { it !in kept }
     }
 
     fun clear() = synchronized(lock) {

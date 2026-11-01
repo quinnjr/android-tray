@@ -1,6 +1,7 @@
 package dev.quinnjr.android_drawer.overlay
 
 import dev.quinnjr.android_drawer.settings.Side
+import kotlin.math.roundToInt
 
 /** Android caps system-gesture exclusion at 200dp per edge, so the handle may not be taller. */
 const val MAX_HANDLE_HEIGHT_DP = 200
@@ -15,7 +16,8 @@ private fun verticalRange(screenHeight: Int, handleHeight: Int, insetTop: Int, i
 /** Top edge for a stored [yFraction], kept clear of the status and navigation bars. */
 fun handleTop(yFraction: Float, screenHeight: Int, handleHeight: Int, insetTop: Int = 0, insetBottom: Int = 0): Int {
     val range = verticalRange(screenHeight, handleHeight, insetTop, insetBottom)
-    return insetTop + (yFraction * range).toInt().coerceIn(0, range)
+    // Rounded, not truncated: a stored fraction must give back exactly the top it came from.
+    return insetTop + (yFraction * range).roundToInt().coerceIn(0, range)
 }
 
 /** The fraction to store for a handle whose top edge is at [top]; the inverse of [handleTop]. */

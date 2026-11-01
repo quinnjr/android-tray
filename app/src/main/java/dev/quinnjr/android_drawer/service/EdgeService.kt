@@ -32,8 +32,9 @@ import dev.quinnjr.android_drawer.apps.DrawConfig
 import dev.quinnjr.android_drawer.apps.DrawnAppCache
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.RecentApps
-import dev.quinnjr.android_drawer.apps.appChanges
+import dev.quinnjr.android_drawer.apps.appsChanged
 import dev.quinnjr.android_drawer.apps.orOnFailure
+import dev.quinnjr.android_drawer.apps.resolveDrawn
 import dev.quinnjr.android_drawer.overlay.DRAWER_ICON_SIZE
 import dev.quinnjr.android_drawer.overlay.OverlayHost
 import dev.quinnjr.android_drawer.settings.AppKey
@@ -42,18 +43,24 @@ import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.withVisibleOrder
 import dev.quinnjr.android_drawer.ui.MainActivity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class EdgeService : LifecycleService() {
     private lateinit var repo: SettingsRepository
     private lateinit var host: OverlayHost
@@ -62,26 +69,26 @@ class EdgeService : LifecycleService() {
     private lateinit var overlayContext: Context
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /**
-     * Pinned apps with icons drawn, kept warm in the background so the drawer opens instantly.
-     * Their order always comes from settings when the drawer opens, so it can never be stale.
-     */
+    /** Pinned apps with icons drawn, reused across loads. */
     private val pinnedIcons = DrawnAppCache()
     /**
-     * The background warm-up of the pinned apps: which keys, and once done, the apps (null if it
-     * failed). An open for the same keys uses it, waiting if it's under way, instead of resolving
-     * again. Null when nothing current is warmed (e.g. an app or the display just changed).
+     * The pinned apps, loaded in the background so the drawer usually has them at once. Derived
+     * from everything they depend on (pinned keys, changes to those apps, the display config):
+     * any change empties it immediately, so a stale list can never be shown. Null while loading.
      */
-    private val warm = MutableStateFlow<WarmUp?>(null)
+    private lateinit var pinned: StateFlow<Pinned?>
+    /** Bumped at once on any change to a pinned app (or to many/all apps), before any debounce. */
+    private val pinnedAppsChanged = MutableStateFlow(0)
 
-    private class WarmUp(val keys: List<AppKey>, val done: Boolean = false, val apps: List<LaunchableApp>? = null)
+    /** Pinned [apps] loaded for [keys]; [apps] null if loading failed. */
+    private class Pinned(val keys: List<AppKey>, val apps: List<LaunchableApp>?)
     /** The settings the handle is showing; null until first read. */
     @Volatile private var latestSettings: DrawerSettings? = null
     /** What app labels and icons depend on; the caches are re-warmed when it changes. */
     private val displayConfig = MutableStateFlow<DrawConfig?>(null)
     private var recentJob: Job? = null
-    /** The drawer being prepared (resolving pinned apps) before it is shown. */
-    private var openJob: Job? = null
+    /** Fills the open drawer's pinned apps once they're loaded. */
+    private var pinnedJob: Job? = null
     /** Recent apps with icons already drawn, so reopening the drawer doesn't redraw them. */
     private val recentIcons = DrawnAppCache(MAX_RECENT_ICONS)
     private var foreground = false
@@ -103,8 +110,6 @@ class EdgeService : LifecycleService() {
     private val closeDrawerReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             Log.d(TAG, "Closing drawer: ${intent.action} ${intent.getStringExtra(EXTRA_CLOSE_REASON).orEmpty()}")
-            // A drawer still being prepared must not appear after this.
-            openJob?.cancel()
             // With the screen off no frames run, so an exit animation would only play on unlock.
             if (intent.action == Intent.ACTION_SCREEN_OFF) { host.removeDrawer() } else { host.closeDrawer() }
         }
@@ -161,98 +166,94 @@ class EdgeService : LifecycleService() {
                 }
             }
         }
-        // Keep the pinned apps' icons drawn ahead of time, off the main thread, so the drawer opens
-        // instantly: whenever the pinned set, one of those apps or the display config changes.
+        // Any app change invalidates the cached launcher entries and that app's icons, at once.
         lifecycleScope.launch {
-            combine(
-                repo.settings.map { it.apps }.distinctUntilChanged(),
-                // Any app change invalidates the cached launcher entries and that app's icons;
-                // only changes to pinned apps (or to many/all at once) re-warm the pinned apps.
-                appChanges(
-                    this@EdgeService,
-                    relevant = ::affectsPinned,
-                    onChange = { pkg ->
-                        catalog.invalidate()
-                        pinnedIcons.onAppChanged(pkg)
-                        recentIcons.onAppChanged(pkg)
-                        // The warmed apps may now be stale (e.g. uninstalled): don't serve them.
-                        if (affectsPinned(pkg)) {
-                            warm.value = null
-                        }
-                    },
-                ),
-                displayConfig.filterNotNull(),
-            ) { keys, _, _ -> keys }
-                .collectLatest { keys ->
-                    // Sized to the pinned apps (no LRU limit to thrash), minus any unpinned since.
-                    pinnedIcons.retain(keys.toSet())
-                    warm.value = WarmUp(keys)
-                    warm.value = WarmUp(keys, done = true, apps = pinnedApps(keys))
+            appsChanged(this@EdgeService).collect { pkg ->
+                catalog.invalidate()
+                pinnedIcons.onAppChanged(pkg)
+                recentIcons.onAppChanged(pkg)
+                if (affectsPinned(pkg)) {
+                    pinnedAppsChanged.value++
                 }
+            }
         }
+        pinned = pinnedApps().stateIn(lifecycleScope, SharingStarted.Eagerly, null)
+    }
+
+    /**
+     * The pinned apps as they change: null first on every change (so nothing stale is ever
+     * current), then the reloaded list. After a change to the apps themselves it waits for a
+     * burst (e.g. many updates) to settle before reloading.
+     */
+    private fun pinnedApps(): Flow<Pinned?> {
+        var settledChange = pinnedAppsChanged.value
+        return combine(
+            repo.settings.map { it.apps }.distinctUntilChanged(),
+            pinnedAppsChanged,
+            displayConfig.filterNotNull(),
+        ) { keys, change, _ -> keys to change }
+            .transformLatest { (keys, change) ->
+                emit(null)
+                if (change != settledChange) {
+                    delay(APPS_CHANGED_SETTLE_MS)
+                    settledChange = change
+                }
+                // Sized to the pinned apps (no LRU limit to thrash), minus any unpinned since.
+                pinnedIcons.retain(keys.toSet())
+                emit(Pinned(keys, withContext(Dispatchers.Default) { catalog.resolveDrawn(pinnedIcons, keys)?.apps }))
+            }
     }
 
     private fun openDrawer() {
-        // Further swipes while the drawer is being prepared would only redo the same work.
-        if (openJob?.isActive == true || host.isDrawerOpen) { return }
+        if (host.isDrawerOpen) {
+            return
+        }
+        // The settings the handle shows (it isn't shown before they're read).
+        val keys = latestSettings?.apps ?: return
         // Recents depend on what was just used, so they're read on every open and fill in when
         // ready; until then the drawer keeps their space if it expects any.
         val expectRecents = recents.hasAccess()
         val recent = mutableStateOf<List<LaunchableApp>?>(null)
-        openJob = lifecycleScope.launch {
-            // The settings the handle already shows: no new read on every swipe.
-            val keys = (latestSettings ?: repo.settings.first()).apps
-            host.openDrawer(
-                apps = warmedApps(keys) ?: pinnedApps(keys).orEmpty(),
-                hasPinned = keys.isNotEmpty(),
-                recent = recent,
-                expectRecents = expectRecents,
-                onLaunch = { app, bounds -> catalog.launch(app, bounds) },
-                onReorder = { shownOrder ->
-                    lifecycleScope.launch { repo.update { it.copy(apps = it.apps.withVisibleOrder(shownOrder)) } }
-                },
-                onOpenSettings = {
-                    startActivity(Intent(this@EdgeService, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                },
-                // Nobody will see the recents of a closed drawer.
-                onClosed = { recentJob?.cancel() },
-                // Only once the drawer has laid out room for them (none in a short landscape drawer).
-                onRecentsNeeded = {
-                    if (expectRecents && recent.value == null && recentJob?.isActive != true) {
-                        recentJob = lifecycleScope.launch { recent.value = recentApps(keys) }
-                    }
-                },
-            )
+        // Shown at once; the pinned apps fill in when loaded (usually they already are).
+        val apps = mutableStateOf(pinned.value?.takeIf { it.keys == keys }?.apps)
+        pinnedJob?.cancel()
+        if (apps.value == null) {
+            pinnedJob = lifecycleScope.launch {
+                val loaded = pinned.first { it != null && it.keys == keys }
+                // A failed background load is retried once here.
+                apps.value = loaded?.apps
+                    ?: withContext(Dispatchers.Default) { catalog.resolveDrawn(pinnedIcons, keys)?.apps }.orEmpty()
+            }
         }
-    }
-
-    /**
-     * The background warm-up's apps for [keys], waiting for it if it's under way (e.g. after a
-     * rotation) rather than drawing the same icons twice; null if there is none for these keys
-     * (or it failed), in which case the caller resolves them itself.
-     */
-    private suspend fun warmedApps(keys: List<AppKey>): List<LaunchableApp>? {
-        // One may be just about to start (the settings flow and this open read the same change).
-        val started = withTimeoutOrNull(WARM_START_WAIT_MS) { warm.first { it?.keys == keys } } ?: return null
-        val finished = if (started.done) {
-            started
-        } else {
-            // Long enough for a slow warm-up; a stalled one falls back to resolving here.
-            withTimeoutOrNull(WARM_WAIT_MS) { warm.first { it?.keys == keys && it.done } }
-        }
-        return finished?.apps
+        host.openDrawer(
+            apps = apps,
+            hasPinned = keys.isNotEmpty(),
+            recent = recent,
+            expectRecents = expectRecents,
+            onLaunch = { app, bounds -> catalog.launch(app, bounds) },
+            onReorder = { shownOrder ->
+                lifecycleScope.launch { repo.update { it.copy(apps = it.apps.withVisibleOrder(shownOrder)) } }
+            },
+            onOpenSettings = {
+                startActivity(Intent(this@EdgeService, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            },
+            // Nobody will see the apps of a closed drawer.
+            onClosed = {
+                pinnedJob?.cancel()
+                recentJob?.cancel()
+            },
+            // Only once the drawer has laid out room for them (none in a short landscape drawer).
+            onRecentsNeeded = {
+                if (expectRecents && recent.value == null && recentJob?.isActive != true) {
+                    recentJob = lifecycleScope.launch { recent.value = recentApps(keys) }
+                }
+            },
+        )
     }
 
     /** Whether a change to [pkg] (null: several apps or a whole profile) concerns the pinned apps. */
     private fun affectsPinned(pkg: String?): Boolean =
         pkg == null || latestSettings?.apps.orEmpty().any { it.pkg == pkg }
-
-    /** The pinned apps for [keys], in order, with icons (drawn ones from the cache); null if loading failed. */
-    private suspend fun pinnedApps(keys: List<AppKey>): List<LaunchableApp>? = withContext(Dispatchers.Default) {
-        orOnFailure("pinned apps", null) {
-            pinnedIcons.load { obtain -> catalog.resolve(keys, cached = { pinnedIcons[it] }, obtain = obtain) }
-        }
-    }
 
     private suspend fun recentApps(pinned: List<AppKey>): List<LaunchableApp> = withContext(Dispatchers.Default) {
         val start = SystemClock.elapsedRealtime()
@@ -280,10 +281,6 @@ class EdgeService : LifecycleService() {
     }
 
     private fun useDrawConfig(config: DrawConfig) {
-        if (config != displayConfig.value) {
-            // Drawn for the old config: don't serve them until re-warmed.
-            warm.value = null
-        }
         pinnedIcons.use(config)
         recentIcons.use(config)
         displayConfig.value = config
@@ -354,8 +351,7 @@ class EdgeService : LifecycleService() {
         private const val NOTIFICATION_ID = 1
         private const val FOREGROUND_RETRY_MS = 500L
         private const val MAX_RECENT_ICONS = 32
-        private const val WARM_START_WAIT_MS = 300L
-        private const val WARM_WAIT_MS = 5_000L
+        private const val APPS_CHANGED_SETTLE_MS = 500L
         private const val EXTRA_CLOSE_REASON = "reason"
 
         private const val EXTRA_FOREGROUND_REQUIRED = "foreground_required"

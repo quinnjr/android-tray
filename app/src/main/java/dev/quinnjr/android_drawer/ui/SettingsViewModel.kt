@@ -5,13 +5,13 @@ import android.content.res.Configuration
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.quinnjr.android_drawer.apps.AppCatalog
-import dev.quinnjr.android_drawer.apps.AppSource
 import dev.quinnjr.android_drawer.apps.DrawConfig
 import dev.quinnjr.android_drawer.apps.DrawnAppCache
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.appsChanged
 import dev.quinnjr.android_drawer.apps.orOnFailure
 import dev.quinnjr.android_drawer.apps.reloads
+import dev.quinnjr.android_drawer.apps.resolveDrawn
 import dev.quinnjr.android_drawer.overlay.clampHandleHeightDp
 import dev.quinnjr.android_drawer.service.EdgeService
 import dev.quinnjr.android_drawer.settings.AppKey
@@ -67,27 +67,26 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         drawConfig.filterNotNull(),
     ) { keys, _, config -> keys to config }
         .mapLatest { (keys, config) ->
-            PinnedApps(keys, drawn(config) { obtain -> catalog.resolve(keys, cached = { icons[it] }, obtain = obtain) })
+            icons.use(config)
+            catalog.resolveDrawn(icons, keys)
+                ?.let { PinnedApps(keys, it.apps, it.unavailable) }
+                ?: PinnedApps(keys, emptyList(), emptySet(), failed = true)
         }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** Every launchable app, for the app picker (only loaded while it is shown); null while loading. */
     val allApps: StateFlow<List<LaunchableApp>?> = combine(reloads, drawConfig.filterNotNull()) { _, config -> config }
-        .mapLatest { config -> drawn(config) { obtain -> catalog.allApps(obtain) } }
+        .mapLatest { config ->
+            icons.use(config)
+            orOnFailure("apps", emptyList()) { icons.load { obtain -> catalog.allApps(obtain) } }
+        }
         // Once the picker is gone, keep only the pinned apps' icons rather than every app's.
         .onCompletion { settings.value?.let { s -> icons.retain(s.apps.toSet()) } }
         .flowOn(Dispatchers.Default)
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+        // Not kept once the picker is gone: every app's drawn icon would stay in memory otherwise.
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000, replayExpirationMillis = 0), null)
 
-    /**
-     * Loads apps with [load] and draws their icons, off the main thread rather than while lists
-     * scroll; apps already drawn come from [icons], and a newer change cancels the work in progress.
-     */
-    private suspend fun drawn(config: DrawConfig, load: (obtain: AppSource) -> List<LaunchableApp>): List<LaunchableApp> {
-        icons.use(config)
-        return orOnFailure("apps", emptyList()) { icons.load(load) }
-    }
 
     /** Call from the activity on creation (including after a configuration change). */
     fun setConfiguration(configuration: Configuration) {

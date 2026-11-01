@@ -106,7 +106,8 @@ class OverlayHost(
 
     /** Shows the drawer; false if it couldn't be (no settings yet, or one is already open). */
     fun openDrawer(
-        apps: List<LaunchableApp>,
+        /** The pinned apps; null while they're still loading (the drawer shows meanwhile). */
+        apps: State<List<LaunchableApp>?>,
         hasPinned: Boolean,
         recent: State<List<LaunchableApp>?>,
         expectRecents: Boolean,
@@ -220,8 +221,10 @@ class OverlayHost(
     /** The system bars' size on each edge (status bar, navigation bar), which the handle keeps clear of. */
     private fun barInsets(): Rect = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         // Display cutouts too: the handle may be laid out under a notch or punch-hole otherwise.
+        // Ignoring visibility: placed while an app hides the bars, it must still clear them once
+        // they're back (like the stable insets used before Android 11).
         val i = wm.currentWindowMetrics.windowInsets
-            .getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+            .getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
         Rect(i.left, i.top, i.right, i.bottom)
     } else {
         // Before Android 11, the system bars' and cutout's size come from an attached overlay's insets.
