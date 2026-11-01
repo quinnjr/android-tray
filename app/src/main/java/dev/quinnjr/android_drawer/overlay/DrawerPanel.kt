@@ -16,11 +16,16 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -41,10 +46,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -65,7 +68,6 @@ private val DISMISS_DRAG = 80.dp
 fun DrawerPanel(
     apps: List<LaunchableApp>,
     side: Side,
-    centerYPx: Int,
     visible: MutableTransitionState<Boolean>,
     onLaunch: (LaunchableApp, Rect?) -> Unit,
     onAddApps: () -> Unit,
@@ -89,7 +91,7 @@ fun DrawerPanel(
                 visibleState = visible,
                 modifier = Modifier
                     .align(if (fromRight) Alignment.TopEnd else Alignment.TopStart)
-                    .centerOn(centerYPx),
+                    .fillMaxHeight(),
                 enter = slideInHorizontally { if (fromRight) it else -it } + fadeIn(),
                 exit = slideOutHorizontally { if (fromRight) it else -it } + fadeOut(),
             ) {
@@ -110,7 +112,6 @@ private fun Panel(
     val dismissPx = with(LocalDensity.current) { DISMISS_DRAG.toPx() }
     val offset = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
-    val maxHeight = with(LocalDensity.current) { (LocalWindowInfo.current.containerSize.height * 0.6f).toDp() }
 
     Surface(
         shape = RoundedCornerShape(28.dp),
@@ -118,9 +119,10 @@ private fun Panel(
         tonalElevation = 6.dp,
         shadowElevation = 8.dp,
         modifier = Modifier
-            .padding(horizontal = 12.dp)
+            .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout))
+            .padding(12.dp)
             .width(212.dp)
-            .heightIn(max = maxHeight)
+            .fillMaxHeight()
             .graphicsLayer { translationX = offset.value }
             // Swallow taps on the panel background so they don't reach the scrim.
             .clickable(remember { MutableInteractionSource() }, indication = null) {}
@@ -140,9 +142,9 @@ private fun Panel(
     ) {
         if (apps.isEmpty()) {
             Column(
-                Modifier.padding(24.dp),
+                Modifier.fillMaxSize().padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
             ) {
                 Text("No apps yet", style = MaterialTheme.typography.titleMedium)
                 Button(onClick = onAddApps) { Text("Add apps") }
@@ -186,14 +188,4 @@ private fun AppCell(app: LaunchableApp, onLaunch: (LaunchableApp, Rect?) -> Unit
             modifier = Modifier.padding(top = 4.dp),
         )
     }
-}
-
-/** Vertically centres the child on [centerYPx] (window coordinates), kept fully on screen. */
-private fun Modifier.centerOn(centerYPx: Int) = layout { measurable, constraints ->
-    val placeable = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
-    val parentHeight = constraints.maxHeight
-    val margin = 32.dp.roundToPx()
-    val maxTop = (parentHeight - placeable.height - margin).coerceAtLeast(margin)
-    val top = (centerYPx - placeable.height / 2).coerceIn(margin, maxTop)
-    layout(placeable.width, parentHeight) { placeable.place(0, top) }
 }

@@ -93,12 +93,10 @@ class OverlayHost(
         val compose = ComposeView(context)
         owner.attachTo(root)
         root.addView(compose, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-        val centerY = handleTop(s.yFraction, screenSize().height, handleHeightPx) + handleHeightPx / 2
         compose.setContent {
             DrawerPanel(
                 apps = apps,
                 side = s.side,
-                centerYPx = centerY,
                 visible = state,
                 // Cells stay clickable during the exit animation; ignore taps once closing.
                 onLaunch = { app, bounds ->
