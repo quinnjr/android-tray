@@ -29,6 +29,7 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import dev.quinnjr.android_drawer.R
 import dev.quinnjr.android_drawer.TAG
+import dev.quinnjr.android_drawer.apps.APPS_CHANGED_SETTLE_MS
 import dev.quinnjr.android_drawer.apps.AppCatalog
 import dev.quinnjr.android_drawer.apps.DrawConfig
 import dev.quinnjr.android_drawer.apps.DrawnAppCache
@@ -39,7 +40,6 @@ import dev.quinnjr.android_drawer.apps.Resolved
 import dev.quinnjr.android_drawer.apps.appsChanged
 import dev.quinnjr.android_drawer.apps.orOnFailure
 import dev.quinnjr.android_drawer.apps.resolveDrawn
-import dev.quinnjr.android_drawer.apps.settled
 import dev.quinnjr.android_drawer.overlay.DRAWER_ICON_SIZE
 import dev.quinnjr.android_drawer.overlay.OverlayHost
 import dev.quinnjr.android_drawer.overlay.PinnedStatus
@@ -59,11 +59,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.merge
-import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.scan
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transformLatest
@@ -101,8 +98,8 @@ class EdgeService : LifecycleService() {
      * one while reloading or after a failure (see keep()).
      */
     private data class Pinned(val keys: List<AppKey>, val kept: KeptLoad<LaunchableApp>) {
-        /** How current these are (the one place it's worked out). */
-        val status: PinnedStatus by lazy { kept.status(keys.toSet()) }
+        /** How current these are, given the retries asked for (the one place it's worked out). */
+        fun status(retryAsked: Int): PinnedStatus = kept.status(keys.toSet(), retryAsked)
     }
     /**
      * The settings as last read (the handle isn't shown before they are). Everything here (handle,
@@ -161,8 +158,10 @@ class EdgeService : LifecycleService() {
             onOpen = ::openDrawer,
             onHandleDropped = { side, fraction ->
                 lifecycleScope.launch {
-                    // The handle goes back where it was; say why (no drawer is open to show it in).
+                    // The handle goes back where it was (put there directly: the undo may never show
+                    // in the settings flow); say why (no drawer is open to show it in).
                     if (!repo.update { it.copy(side = side, yFraction = fraction) }) {
+                        latestSettings?.let(host::showHandle)
                         toastSaveFailed()
                     }
                 }
@@ -211,18 +210,24 @@ class EdgeService : LifecycleService() {
      */
     private fun pinnedApps(): Flow<Pinned?> {
         val keys = pinnedKeys.filterNotNull()
-        // Loaded by the set of pinned apps: a reorder needs no reload (and shows no spinner). After
-        // app changes it loads once they've settled (a burst, e.g. many updates, loads once).
-        val load: Flow<LoadedPinned<LaunchableApp>?> = combine(
+        // Loaded by the set of pinned apps: a reorder needs no reload (and shows no spinner).
+        // The app changes the last load waited for (see below).
+        var settledChanges = 0
+        val loaded: Flow<LoadedPinned<LaunchableApp>?> = combine(
             keys.map { it.toSet() }.distinctUntilChanged(),
-            pinnedAppsChanges.drop(1).map { }.settled().onStart { emit(Unit) },
+            pinnedAppsChanges,
             displayConfig.filterNotNull(),
             pinnedRetry,
-        ) { set, _, _, retry -> set to retry }
-            .transformLatest { (set, retry) ->
-                // Marks the reload at once: a retry asked for by opening the drawer shows as such.
-                val changesAtStart = pinnedAppsChanges.value
+        ) { set, changes, _, retry -> Triple(set, changes, retry) }
+            .transformLatest { (set, changes, retry) ->
+                // Every trigger marks the reload at once (e.g. a retry asked for by opening the
+                // drawer). After app changes it waits for them to settle: each new one restarts
+                // this, so a burst (e.g. many updates) loads once, whatever else triggers it.
                 emit(null)
+                if (changes != settledChanges) {
+                    delay(APPS_CHANGED_SETTLE_MS)
+                    settledChanges = changes
+                }
                 // Sized to the pinned apps (no LRU limit to thrash), minus any unpinned since.
                 pinnedIcons.retain(set)
                 // A few attempts with backoff (e.g. LauncherApps not ready after boot), then the
@@ -241,19 +246,14 @@ class EdgeService : LifecycleService() {
                         break
                     }
                 }
-                // Not if an app changed meanwhile: its settled reload comes next (and isn't current).
-                if (pinnedAppsChanges.value == changesAtStart) {
-                    emit(LoadedPinned(set, apps?.apps?.associateBy { it.key }, unknown = apps?.unknown.orEmpty(), retry))
-                }
+                emit(LoadedPinned(set, apps?.apps?.associateBy { it.key }, unknown = apps?.unknown.orEmpty(), retry))
             }
-        // A change to an app marks a reload at once, before it settles.
-        val loaded = merge(pinnedAppsChanges.drop(1).map { null }, load)
         // While reloading, or after a reload failed, the last good load is kept (so an open drawer
         // keeps its grid, scroll and any press under way); the current saved order is applied after,
         // so a kept load still shows a reorder saved meanwhile and leaves out apps unpinned since.
         val kept = loaded.scan<LoadedPinned<LaunchableApp>?, KeptLoad<LaunchableApp>?>(null) { last, next -> last.keep(next) }
-        // The status reflects the current keys and any retry asked for, so the drawer never shows a
-        // load for another set, or a failure being retried, as current.
+        // The status reflects the current keys (and, in the drawer, any retry asked for), so it never
+        // shows a load for another set, or a failure being retried, as current.
         return combine(keys, kept) { order, k -> k?.let { Pinned(order, it) } }.distinctUntilChanged()
     }
 
@@ -268,9 +268,11 @@ class EdgeService : LifecycleService() {
         // A failed load is retried whenever someone opens the drawer (e.g. LauncherApps wasn't
         // ready right after boot); the reload it starts shows as such. (Not while a load is
         // already running: that would only restart it.)
-        if (pinned.value?.status == PinnedStatus.FAILED) {
+        if (pinned.value?.status(pinnedRetry.value) == PinnedStatus.FAILED) {
             pinnedRetry.value++
         }
+        // Until that retry lands, the failure shows as reloading.
+        val retryAsked = pinnedRetry.value
         // Recents depend on what was just used, so they're read on every open and fill in when
         // ready; until then the drawer keeps their space if it expects any.
         val expectRecents = recents.hasAccess()
@@ -309,11 +311,12 @@ class EdgeService : LifecycleService() {
             }
         }
         var recentLoad: Job? = null
-        val added = host.openDrawer(
+        // A drawer that can't be shown is cleaned up by the host, which calls onClosed.
+        host.openDrawer(
             // The loaded apps in the settings' current order (also over a list kept from before the
             // pinned set changed: apps unpinned since are left out, ones not loaded yet come later).
             apps = derivedStateOf { shownPinned.value?.let { p -> p.kept.load.ordered(order.value).orEmpty() } },
-            status = derivedStateOf { shownPinned.value?.status ?: PinnedStatus.RELOADING },
+            status = derivedStateOf { shownPinned.value?.status(retryAsked) ?: PinnedStatus.RELOADING },
             hasPinned = derivedStateOf { order.value.isNotEmpty() },
             notice = notice,
             recent = recent,
@@ -344,6 +347,9 @@ class EdgeService : LifecycleService() {
                 lifecycleScope.launch {
                     if (!saved.await()) {
                         if (drawerJob.isActive) {
+                            // Put back directly: the undo may never show in the keys flow (it can
+                            // land before that flow saw the change, leaving it nothing new to emit).
+                            repo.state.value?.let { order.value = it.apps }
                             showNotice(getString(R.string.settings_save_failed))
                         } else {
                             toastSaveFailed()
@@ -368,10 +374,6 @@ class EdgeService : LifecycleService() {
                 }
             },
         )
-        if (!added) {
-            // Not shown (the host cleans up after a failed window add itself).
-            drawerJob.cancel()
-        }
     }
 
     /** Says a change couldn't be saved (and was undone), where no drawer is open to say it in. */

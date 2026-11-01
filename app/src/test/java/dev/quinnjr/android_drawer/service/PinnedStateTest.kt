@@ -107,4 +107,12 @@ class PinnedStateTest {
         assertEquals(listOf("a/a.A", "b/b.B"), again.load.ordered(listOf(a, b)))
         assertEquals(PinnedStatus.FAILED, again.status(setOf(a, b)))
     }
+
+    @Test
+    fun `a failure with a retry asked for since shows as reloading until that retry lands`() {
+        val failed = null.keep(load(a, b)).keep(load(a, b, failed = true))!!
+        assertEquals(PinnedStatus.RELOADING, failed.status(setOf(a, b), retryAsked = 1))
+        val retriedAndFailed = failed.keep(null).keep(LoadedPinned(setOf(a, b), null, retry = 1))!!
+        assertEquals(PinnedStatus.FAILED, retriedAndFailed.status(setOf(a, b), retryAsked = 1))
+    }
 }

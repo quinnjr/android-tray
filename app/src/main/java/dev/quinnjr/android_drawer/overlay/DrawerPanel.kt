@@ -53,7 +53,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -368,11 +367,10 @@ private fun PinnedGrid(
     val currentLatest by rememberUpdatedState(latest)
     val currentOnReorder by rememberUpdatedState(onReorder)
     // While a drag is in progress its order is shown, mapped onto the current apps: a reload
-    // meanwhile mustn't move icons under the finger, but updated icons show, removed apps go (the
-    // drag ends, saving the other moves, if it's the dragged one) and newly pinned ones are added at
-    // the end. The released order then shows at once: the drawer applies it while it saves.
+    // meanwhile mustn't move icons under the finger, but updated icons show, removed apps go (if it's
+    // the dragged one, the rest of the gesture moves nothing; the other moves are saved on release)
+    // and newly pinned ones are added at the end. The released order then shows at once: the drawer applies it while it saves.
     val dragged = remember(drag.order, latest) { drag.order?.let { order -> latest.arrangedBy(order) { it.key } } }
-    val draggedAppGone = drag.key != null && dragged != null && dragged.none { it.key == drag.key }
     val order = dragged ?: latest
     val currentOrder by rememberUpdatedState(order)
     // Each shown app's place by its layout key, worked out once per order (not per pointer move).
@@ -393,6 +391,7 @@ private fun PinnedGrid(
     fun followPointer() {
         val key = drag.key ?: return
         val current = currentOrder
+        // -1 if the lifted app vanished in a reload: then nothing moves until the finger lifts.
         val from = current.indexOfFirst { it.key == key }
         // Wait for the grid to lay out the previous move before moving again.
         val layoutKey = key.encode()
@@ -428,14 +427,6 @@ private fun PinnedGrid(
         onDispose { finishDrag() }
     }
 
-    if (draggedAppGone) {
-        // The rest of this gesture is still consumed (see below) until the finger lifts.
-        SideEffect {
-            finishDrag()
-            drag.abandoned = true
-        }
-    }
-
     // While an app is lifted, keep scrolling each frame the finger rests near the top or bottom.
     LaunchedEffect(drag.key != null) {
         while (drag.key != null) {
@@ -468,20 +459,10 @@ private fun PinnedGrid(
                     grab = start - info.offset.toOffset()
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 },
-                onDragEnd = {
-                    finishDrag()
-                    drag.abandoned = false
-                },
-                onDragCancel = {
-                    finishDrag()
-                    drag.abandoned = false
-                },
+                onDragEnd = ::finishDrag,
+                onDragCancel = ::finishDrag,
             ) { change, _ ->
                 if (drag.key == null) {
-                    // A drag ended early (its app vanished): keep the gesture from scrolling the grid.
-                    if (drag.abandoned) {
-                        change.consume()
-                    }
                     return@detectDragGesturesAfterLongPress
                 }
                 change.consume()
@@ -495,7 +476,7 @@ private fun PinnedGrid(
     LazyVerticalGrid(
         columns = GridCells.Fixed(COLUMNS),
         state = gridState,
-        userScrollEnabled = drag.key == null && !drag.abandoned,
+        userScrollEnabled = drag.key == null,
         // Plain padding, not contentPadding: the drag hit-testing compares the finger (in this
         // modifier's coordinates) with item offsets, which contentPadding would shift.
         modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = CELL_SPACING, bottom = 16.dp).then(reorder),
@@ -530,8 +511,6 @@ private class GridDrag {
         private set
     /** The order being dragged, as keys (shown mapped onto the current apps). */
     var order by mutableStateOf<List<AppKey>?>(null)
-    /** The drag ended early (its app vanished) but the finger is still down. */
-    var abandoned by mutableStateOf(false)
     /**
      * The apps there when the drag began, in their order then: only their order is saved (one
      * pinned meanwhile keeps its place).

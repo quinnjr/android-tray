@@ -119,13 +119,20 @@ class OverlayHost(
         onLaunch: (LaunchableApp, Rect?) -> Boolean,
         onReorder: (List<AppKey>) -> Unit,
         onOpenSettings: () -> Unit,
-        /** Called once the drawer has been removed. */
+        /** Called once the drawer has been removed, or straight away if it couldn't be shown. */
         onClosed: () -> Unit,
         onRecentsNeeded: () -> Unit,
     ): Boolean {
-        val s = settings ?: return false
+        // Not shown: onClosed still runs, so the caller's cleanup is in one place.
+        val s = settings ?: run {
+            onClosed()
+            return false
+        }
         if (drawer != null) {
-            if (isDrawerOpen) { return false }
+            if (isDrawerOpen) {
+                onClosed()
+                return false
+            }
             // Swiped again while it was closing: replace it rather than wait for the animation.
             removeDrawer()
         }

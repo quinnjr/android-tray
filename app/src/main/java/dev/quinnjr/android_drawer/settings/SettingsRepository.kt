@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.retryWhen
@@ -70,17 +71,20 @@ class SettingsRepository private constructor(context: Context) {
     init {
         // A read error is retried with backoff rather than made up for: defaults (handle on, no
         // apps) could undo what the user chose. I/O errors (e.g. storage not ready) are retried
-        // for as long as they last; anything else a few times, then it's a bug and crashes.
+        // for as long as they last; anything else a few times, then given up on and logged (the
+        // settings stay unread: no handle, and the app says nothing worse than that).
         scope.launch {
+            var otherErrors = 0
             store.data
                 .retryWhen { cause, attempt ->
-                    val retry = cause is IOException || attempt < OTHER_ERROR_RETRIES
+                    val retry = cause is IOException || otherErrors++ < OTHER_ERROR_RETRIES
                     if (retry) {
                         Log.w(TAG, "Could not read settings; retrying", cause)
                         delay((attempt + 1).coerceAtMost(MAX_RETRY_STEPS) * RETRY_STEP_MS)
                     }
                     retry
                 }
+                .catch { e -> Log.e(TAG, "Could not read settings; giving up", e) }
                 .collect { prefs -> fromDisk(prefs.toSettings()) }
         }
     }
@@ -114,13 +118,13 @@ class SettingsRepository private constructor(context: Context) {
     private suspend fun save(mine: Long): Boolean {
         while (true) {
             val (next, nextVersion) = synchronized(stateLock) {
-                // Already written by a later change's save (which wrote this one too), or undone
-                // after an earlier save failed.
-                if (onDiskVersion >= mine) {
-                    return true
-                }
+                // Undone after a save failed, or already written by a later change's save (which
+                // wrote this one too). In that order: an undo also brings the disk version up.
                 if (undoneThrough >= mine) {
                     return false
+                }
+                if (onDiskVersion >= mine) {
+                    return true
                 }
                 checkNotNull(current.value) to version
             }
@@ -140,6 +144,8 @@ class SettingsRepository private constructor(context: Context) {
                     if (version == nextVersion) {
                         current.value = onDisk
                         undoneThrough = nextVersion
+                        // Memory matches the disk again, so the file is followed again.
+                        onDiskVersion = nextVersion
                         return false
                     }
                 }
@@ -196,6 +202,6 @@ class SettingsRepository private constructor(context: Context) {
         private val ICONS_LOCKED = booleanPreferencesKey("icons_locked")
         private const val RETRY_STEP_MS = 1_000L
         private const val MAX_RETRY_STEPS = 30L
-        private const val OTHER_ERROR_RETRIES = 3L
+        private const val OTHER_ERROR_RETRIES = 3
     }
 }

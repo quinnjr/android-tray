@@ -29,13 +29,15 @@ internal class LoadedPinned<T>(
  * The load the drawer shows: the latest one, or while a reload runs ([reloading]) or after one
  * failed ([failed]) the last good one. The current pinned order is applied to it afterwards, so
  * a kept load always shows the saved order and leaves out apps unpinned since. [givenUp]: apps
- * that still couldn't be listed after a retry, left out without counting as a failure.
+ * that still couldn't be listed after a retry, left out without counting as a failure. [attempt]:
+ * the retry count of the latest load (see [LoadedPinned.retry]), so a retry asked for since shows.
  */
 internal data class KeptLoad<T>(
     val load: LoadedPinned<T>,
     val reloading: Boolean = false,
     val failed: Boolean = false,
     val givenUp: Set<AppKey> = emptySet(),
+    val attempt: Int = load.retry,
 )
 
 /** The next kept load, given [next]: a new load, or null when a reload has just started. */
@@ -43,7 +45,13 @@ internal fun <T> KeptLoad<T>?.keep(next: LoadedPinned<T>?): KeptLoad<T>? = when 
     next == null -> this?.copy(reloading = true)
     // Failed with a good load to keep: keep it (minus apps unpinned since), noting this attempt.
     next.apps == null && this?.load?.apps != null ->
-        KeptLoad(load.restrictedTo(next.keys), reloading = false, failed = true, givenUp = givenUp intersect next.keys)
+        KeptLoad(
+            load.restrictedTo(next.keys),
+            reloading = false,
+            failed = true,
+            givenUp = givenUp intersect next.keys,
+            attempt = next.retry,
+        )
     // Some apps couldn't be listed this time: keep their earlier copy (if any) rather than drop
     // them, as a failure, so opening the drawer tries again. Once a retry asked for that way fails
     // for them too, they're left out and no longer count as failed (no endless retries for an app
@@ -63,11 +71,13 @@ internal fun <T> KeptLoad<T>?.keep(next: LoadedPinned<T>?): KeptLoad<T>? = when 
 }
 
 /**
- * How current this kept load is for the pinned [keys]: a reload under way, or a load for another
- * set (its reload is on the way), counts as reloading.
+ * How current this kept load is for the pinned [keys]: a reload under way, a failure being
+ * retried (the retries asked for are [retryAsked]), or a load for another set (its reload is on
+ * the way), counts as reloading.
  */
-internal fun <T> KeptLoad<T>.status(keys: Set<AppKey>): PinnedStatus = when {
+internal fun <T> KeptLoad<T>.status(keys: Set<AppKey>, retryAsked: Int = attempt): PinnedStatus = when {
     reloading -> PinnedStatus.RELOADING
+    failed && retryAsked > attempt -> PinnedStatus.RELOADING
     failed -> PinnedStatus.FAILED
     load.keys != keys -> PinnedStatus.RELOADING
     else -> PinnedStatus.CURRENT
