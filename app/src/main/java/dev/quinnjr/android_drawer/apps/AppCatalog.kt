@@ -17,7 +17,10 @@ import android.os.Process
 import android.os.UserHandle
 import android.os.UserManager
 import android.util.Log
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.toBitmap
 import dev.quinnjr.android_drawer.settings.AppKey
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -29,7 +32,13 @@ data class LaunchableApp(
     val icon: Drawable?,
     val component: ComponentName,
     val user: UserHandle,
+    /** [icon] already drawn to a bitmap, so the drawer doesn't rasterize on the main thread. */
+    val bitmap: ImageBitmap? = null,
 )
+
+/** Pre-renders each app's icon at [sizePx]; call off the main thread. */
+fun List<LaunchableApp>.withBitmaps(sizePx: Int): List<LaunchableApp> =
+    map { app -> app.copy(bitmap = app.icon?.toBitmap(sizePx, sizePx)?.asImageBitmap()) }
 
 class AppCatalog(context: Context) {
     private val packageName = context.packageName
@@ -58,15 +67,16 @@ class AppCatalog(context: Context) {
             .groupBy { it.componentName.packageName }
         val excluded = buildSet {
             add(packageName)
-            recents.homePackage()?.let(::add)
+            addAll(recents.homePackages())
             pinned.filter { it.userSerial == serial }.forEach { add(it.component.substringBefore('/')) }
         }
-        // Scan the last few hours first; only widen the window if that didn't find enough apps.
         val now = System.currentTimeMillis()
-        var picked = recents.history(now - SHORT_LOOKBACK_MS, now).pick(excluded, byPackage.keys, limit)
-        if (picked.size < limit) picked = recents.history(now - LONG_LOOKBACK_MS, now).pick(excluded, byPackage.keys, limit)
-        return picked.map { pkg ->
-            val info = byPackage.getValue(pkg).first()
+        val history = recents.history(now - LOOKBACK_MS, now)
+        return history.pick(excluded, byPackage.keys, limit).map { pkg ->
+            // Prefer the entry point actually used, for apps with several (e.g. Google and Lens).
+            val entries = byPackage.getValue(pkg)
+            val used = history.lastActivity(pkg)
+            val info = entries.firstOrNull { it.componentName.className == used } ?: entries.first()
             info.toApp(AppKey(info.componentName.flattenToString(), serial))
         }
     }
@@ -103,8 +113,7 @@ class AppCatalog(context: Context) {
         /** How many recent apps the drawer shows. */
         const val RECENT_LIMIT = 4
         private const val TAG = "EdgeDrawer"
-        private const val SHORT_LOOKBACK_MS = 6L * 60 * 60 * 1000
-        private const val LONG_LOOKBACK_MS = 3L * 24 * 60 * 60 * 1000
+        private const val LOOKBACK_MS = 3L * 24 * 60 * 60 * 1000
     }
 }
 

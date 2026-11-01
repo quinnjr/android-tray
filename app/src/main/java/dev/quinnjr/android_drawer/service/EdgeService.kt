@@ -19,12 +19,15 @@ import android.provider.Settings
 import android.util.Log
 import android.view.Display
 import android.view.WindowManager
+import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import dev.quinnjr.android_drawer.R
 import dev.quinnjr.android_drawer.apps.AppCatalog
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.RecentApps
+import dev.quinnjr.android_drawer.apps.withBitmaps
+import dev.quinnjr.android_drawer.overlay.DRAWER_ICON_SIZE
 import dev.quinnjr.android_drawer.apps.appsChanged
 import dev.quinnjr.android_drawer.overlay.OverlayHost
 import dev.quinnjr.android_drawer.settings.AppKey
@@ -32,16 +35,18 @@ import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.withVisibleOrder
 import dev.quinnjr.android_drawer.ui.MainActivity
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class EdgeService : LifecycleService() {
     private lateinit var repo: SettingsRepository
     private lateinit var host: OverlayHost
@@ -54,6 +59,8 @@ class EdgeService : LifecycleService() {
     private var drawerApps: List<LaunchableApp>? = null
     private var drawerKeys: List<AppKey>? = null
     private var opening = false
+    /** An order saved from the drawer that the settings flow hasn't caught up with yet. */
+    private var pendingKeys: List<AppKey>? = null
     private var foreground = false
     private var retryScheduled = false
 
@@ -112,8 +119,11 @@ class EdgeService : LifecycleService() {
                 repo.settings.map { it.apps }.distinctUntilChanged(),
                 appsChanged(this@EdgeService).onStart { emit(Unit) },
             ) { keys, _ -> keys }
-                .map { keys -> keys to withContext(Dispatchers.Default) { catalog.resolve(keys) } }
+                .mapLatest { keys -> keys to withContext(Dispatchers.Default) { catalog.resolve(keys).withBitmaps(iconSizePx()) } }
                 .collect { (keys, apps) ->
+                    // A resolve that started before a drawer reorder would put the old order back.
+                    val pending = pendingKeys
+                    if (pending != null && keys != pending) return@collect
                     drawerKeys = keys
                     drawerApps = apps
                 }
@@ -133,30 +143,54 @@ class EdgeService : LifecycleService() {
         }
     }
 
-    private suspend fun showDrawer() = coroutineScope {
+    private suspend fun showDrawer() {
         val pinnedKeys = drawerKeys ?: repo.settings.first().apps
-        // Recents depend on what was just used, so they're read now, alongside the pinned apps.
-        val recent = async(Dispatchers.Default) {
-            val start = SystemClock.elapsedRealtime()
-            runCatching { catalog.recent(pinnedKeys, recents) }
-                .onFailure { Log.w(TAG, "Could not read recent apps", it) }
-                .getOrDefault(emptyList())
-                .also { Log.d(TAG, "Recent apps read in ${SystemClock.elapsedRealtime() - start} ms") }
-        }
         // Opened before the first resolve finished: resolve now rather than show "No apps yet".
-        val apps = drawerApps ?: withContext(Dispatchers.Default) { catalog.resolve(pinnedKeys) }
+        val apps = drawerApps ?: withContext(Dispatchers.Default) { catalog.resolve(pinnedKeys).withBitmaps(iconSizePx()) }
+        val recent = mutableStateOf(emptyList<LaunchableApp>())
         host.openDrawer(
             apps = apps,
-            recent = recent.await(),
+            recent = recent,
             onLaunch = { app, bounds -> catalog.launch(app, bounds) },
-            onReorder = { visibleOrder ->
-                lifecycleScope.launch { repo.update { it.copy(apps = it.apps.withVisibleOrder(visibleOrder)) } }
-            },
+            onReorder = ::saveDrawerOrder,
             onOpenSettings = {
                 startActivity(Intent(this@EdgeService, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             },
         )
+        // Recents depend on what was just used, so they're read on every open and slot in when ready.
+        recent.value = withContext(Dispatchers.Default) {
+            val start = SystemClock.elapsedRealtime()
+            runCatching { catalog.recent(pinnedKeys, recents).withBitmaps(iconSizePx()) }
+                .onFailure { Log.w(TAG, "Could not read recent apps", it) }
+                .getOrDefault(emptyList())
+                .also { Log.d(TAG, "Recent apps read in ${SystemClock.elapsedRealtime() - start} ms") }
+        }
     }
+
+    /**
+     * Saves an order chosen in the drawer, and applies it to the cached drawer contents at once so
+     * a drawer reopened before the save lands doesn't show (and then re-save) the old order.
+     */
+    private fun saveDrawerOrder(visibleOrder: List<AppKey>) {
+        val keys = drawerKeys
+        val shown = drawerApps
+        if (keys != null && shown != null) {
+            val reordered = keys.withVisibleOrder(visibleOrder)
+            val byKey = shown.associateBy { it.key }
+            drawerKeys = reordered
+            drawerApps = reordered.mapNotNull { byKey[it] }
+            pendingKeys = reordered
+        }
+        lifecycleScope.launch {
+            try {
+                repo.update { it.copy(apps = it.apps.withVisibleOrder(visibleOrder)) }
+            } finally {
+                pendingKeys = null
+            }
+        }
+    }
+
+    private fun iconSizePx(): Int = (DRAWER_ICON_SIZE.value * overlayContext.resources.displayMetrics.density).roundToInt()
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)

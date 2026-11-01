@@ -39,14 +39,17 @@ class HandleView(
         this.side = side
         paint.color = color.toInt()
         paint.alpha = (alpha.coerceIn(0f, 1f) * 255).toInt()
-        val config = ViewConfiguration.get(context)
-        gesture = HandleGesture(
-            side = side,
-            touchSlopPx = config.scaledTouchSlop.toFloat(),
-            openDistancePx = OPEN_DISTANCE_DP * density,
-            longPressMs = ViewConfiguration.getLongPressTimeout().toLong(),
-            screenWidth = screenWidth,
-        )
+        val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+        val openDistance = OPEN_DISTANCE_DP * density
+        val longPressMs = ViewConfiguration.getLongPressTimeout().toLong()
+        val current = gesture
+        // Settings writes (colour, a just-dropped position) re-run this; keep a swipe in progress.
+        if (current == null || current.side != side || current.touchSlopPx != touchSlop ||
+            current.openDistancePx != openDistance || current.longPressMs != longPressMs ||
+            current.screenWidth != screenWidth
+        ) {
+            gesture = HandleGesture(side, touchSlop, openDistance, longPressMs, screenWidth)
+        }
         invalidate()
     }
 

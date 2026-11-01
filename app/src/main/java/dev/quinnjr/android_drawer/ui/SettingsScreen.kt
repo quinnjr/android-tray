@@ -1,6 +1,5 @@
 package dev.quinnjr.android_drawer.ui
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -31,14 +30,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import androidx.core.graphics.drawable.toBitmap
 import dev.quinnjr.android_drawer.apps.AppCatalog
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.overlay.MAX_HANDLE_HEIGHT_DP
@@ -241,16 +236,5 @@ private fun LabeledSlider(label: String, value: Float, range: ClosedFloatingPoin
     Column(Modifier.padding(horizontal = 16.dp)) {
         Text(label, style = MaterialTheme.typography.bodyLarge)
         Slider(value = value.coerceIn(range), onValueChange = onChange, valueRange = range)
-    }
-}
-
-@Composable
-fun AppIcon(app: LaunchableApp) {
-    val sizePx = with(LocalDensity.current) { 40.dp.roundToPx() }
-    val bitmap = remember(app.key, sizePx) { app.icon?.toBitmap(sizePx, sizePx)?.asImageBitmap() }
-    if (bitmap != null) {
-        Image(bitmap, contentDescription = null, modifier = Modifier.size(40.dp))
-    } else {
-        Spacer(Modifier.size(40.dp))
     }
 }

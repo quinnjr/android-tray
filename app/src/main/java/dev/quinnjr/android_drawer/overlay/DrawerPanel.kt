@@ -8,7 +8,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -48,7 +47,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.setValue
@@ -56,7 +57,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -71,15 +71,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.toOffset
 import androidx.compose.ui.zIndex
-import androidx.core.graphics.drawable.toBitmap
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.Side
+import dev.quinnjr.android_drawer.ui.AppIcon
 import dev.quinnjr.android_drawer.ui.moved
 import dev.quinnjr.android_drawer.ui.theme.AppTheme
 import kotlinx.coroutines.launch
 
 private val DISMISS_DRAG = 80.dp
+
+/** Size of app icons in the drawer; the service pre-renders icons at this size. */
+val DRAWER_ICON_SIZE = 52.dp
 private val AUTOSCROLL_EDGE = 48.dp
 private const val AUTOSCROLL_STEP_PX = 12f
 
@@ -93,7 +96,8 @@ private val LABEL_COLOR = Color.White
 @Composable
 fun DrawerPanel(
     apps: List<LaunchableApp>,
-    recent: List<LaunchableApp>,
+    /** Filled in shortly after the drawer opens, once usage history has been read. */
+    recent: State<List<LaunchableApp>>,
     side: Side,
     visible: MutableTransitionState<Boolean>,
     iconsLocked: Boolean,
@@ -125,7 +129,7 @@ fun DrawerPanel(
                 enter = slideInHorizontally { if (fromRight) it else -it } + fadeIn(),
                 exit = slideOutHorizontally { if (fromRight) it else -it } + fadeOut(),
             ) {
-                Panel(apps, recent, fromRight, iconsLocked, onLaunch, onReorder, onOpenSettings, onDismiss)
+                Panel(apps, recent.value, fromRight, iconsLocked, onLaunch, onReorder, onOpenSettings, onDismiss)
             }
         }
     }
@@ -214,8 +218,9 @@ private fun AppGrid(
     // Finger position in grid coordinates, and where on the icon it grabbed.
     var pointer by remember { mutableStateOf(Offset.Zero) }
     var grab by remember { mutableStateOf(Offset.Zero) }
-    // Grid index of the first pinned app (after the recents and their divider).
-    val pinnedStart = recent.size + if (recent.isNotEmpty()) 1 else 0
+    // Grid index of the first pinned app (after the recents and their divider). Recents can
+    // arrive mid-drag, so the gesture reads the latest value rather than restarting.
+    val pinnedStart by rememberUpdatedState(recent.size + if (recent.isNotEmpty()) 1 else 0)
 
     fun pinnedAt(position: Offset): LazyGridItemInfo? = gridState.layoutInfo.visibleItemsInfo.firstOrNull {
         it.index >= pinnedStart && it.index < pinnedStart + order.size &&
@@ -259,7 +264,7 @@ private fun AppGrid(
     val reorder = if (iconsLocked || order.isEmpty()) {
         Modifier
     } else {
-        Modifier.pointerInput(pinnedStart) {
+        Modifier.pointerInput(Unit) {
             detectDragGesturesAfterLongPress(
                 onDragStart = { start ->
                     val info = pinnedAt(start) ?: return@detectDragGesturesAfterLongPress
@@ -287,10 +292,10 @@ private fun AppGrid(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         // Recently used apps, set apart from the pinned ones by a divider.
-        items(recent, key = { "recent:" + it.key.encode() }) { app -> AppCell(app, onLaunch) }
+        items(recent, key = { "recent:" + it.key.encode() }) { app -> AppCell(app, onLaunch, Modifier.animateItem()) }
         if (recent.isNotEmpty()) {
             item(key = "recent-divider", span = { GridItemSpan(maxLineSpan) }) {
-                HorizontalDivider(Modifier.padding(horizontal = 8.dp))
+                HorizontalDivider(Modifier.animateItem().padding(horizontal = 8.dp))
             }
         }
         if (order.isEmpty()) {
@@ -335,9 +340,6 @@ private fun NoApps(onOpenSettings: () -> Unit, modifier: Modifier) {
 
 @Composable
 private fun AppCell(app: LaunchableApp, onLaunch: (LaunchableApp, Rect?) -> Unit, modifier: Modifier = Modifier) {
-    val density = LocalDensity.current
-    val sizePx = with(density) { 52.dp.roundToPx() }
-    val bitmap = remember(app.key, sizePx) { app.icon?.toBitmap(sizePx, sizePx)?.asImageBitmap() }
     val position = remember { arrayOfNulls<LayoutCoordinates>(1) }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -348,9 +350,7 @@ private fun AppCell(app: LaunchableApp, onLaunch: (LaunchableApp, Rect?) -> Unit
             }
             .padding(4.dp),
     ) {
-        Box(Modifier.size(52.dp).onGloballyPositioned { position[0] = it }) {
-            bitmap?.let { Image(it, contentDescription = null, modifier = Modifier.fillMaxSize()) }
-        }
+        AppIcon(app, Modifier.onGloballyPositioned { position[0] = it }, DRAWER_ICON_SIZE)
         Text(
             app.label,
             fontSize = 12.sp,

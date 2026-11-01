@@ -50,6 +50,47 @@ class RecentPickTest {
     }
 
     @Test
+    fun `app left resumed by a shutdown is not stuck as on screen`() {
+        val h = UsageHistory().apply {
+            resumed("a", 1L)
+            shutdown()
+            resumed("b", 2L); paused("b")
+        }
+        assertEquals(listOf("b", "a"), h.pick())
+    }
+
+    @Test
+    fun `app whose pause was never recorded drops off screen once two newer apps resume`() {
+        // e.g. a crash: no pause for "a", but two other apps have been on screen since.
+        val h = UsageHistory().apply {
+            resumed("a", 1L)
+            resumed("b", 2L); paused("b")
+            resumed("c", 3L)
+            resumed("d", 4L)
+        }
+        assertEquals(listOf("b", "a"), h.pick())
+    }
+
+    @Test
+    fun `stopped counts as no longer on screen`() {
+        val h = UsageHistory().apply {
+            resumed("a", 1L); stopped("a")
+            resumed("now", 2L)
+        }
+        assertEquals(listOf("a"), h.pick())
+    }
+
+    @Test
+    fun `remembers the activity last used in each app`() {
+        val h = UsageHistory().apply {
+            resumed("a", 1L, "a.Main"); paused("a")
+            resumed("a", 2L, "a.Lens"); paused("a")
+        }
+        assertEquals("a.Lens", h.lastActivity("a"))
+        assertEquals(null, h.lastActivity("b"))
+    }
+
+    @Test
     fun `excluded apps are skipped and older apps fill their slots`() {
         val h = history("a" to 1L, "b" to 2L, "c" to 3L, "d" to 4L, "e" to 5L, "f" to 6L)
         assertEquals(listOf("f", "d", "b", "a"), h.pick(excluded = setOf("e", "c")))

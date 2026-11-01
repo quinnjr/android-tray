@@ -12,6 +12,7 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowManager
 import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.runtime.State
 import androidx.compose.ui.platform.ComposeView
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.settings.AppKey
@@ -83,7 +84,7 @@ class OverlayHost(
 
     fun openDrawer(
         apps: List<LaunchableApp>,
-        recent: List<LaunchableApp>,
+        recent: State<List<LaunchableApp>>,
         onLaunch: (LaunchableApp, Rect?) -> Unit,
         onReorder: (List<AppKey>) -> Unit,
         onOpenSettings: () -> Unit,
