@@ -87,7 +87,7 @@ class EdgeService : LifecycleService() {
     private val pinned = MutableStateFlow<Pinned?>(null)
     /**
      * The pinned apps' keys in their saved order (null until the settings are read): one shared
-     * reading for the pinned apps, the drawer's order and recents.
+     * reading for the pinned apps and recents.
      */
     private lateinit var pinnedKeys: StateFlow<List<AppKey>?>
     /** Bumped at once on any change to a pinned app (or to many/all apps), before any debounce. */
@@ -106,7 +106,7 @@ class EdgeService : LifecycleService() {
      * pinned apps, drawer) reads the one repository state, so they never disagree about which apps
      * are pinned.
      */
-    private val latestSettings: DrawerSettings? get() = repo.state.value
+    private val latestSettings: DrawerSettings? get() = repo.value
     /** Bumped to reload the pinned apps after a failed load (e.g. when a drawer opens). */
     private val pinnedRetry = MutableStateFlow(0)
     /** What app labels and icons depend on; the caches are re-warmed when it changes. */
@@ -158,10 +158,9 @@ class EdgeService : LifecycleService() {
             onOpen = ::openDrawer,
             onHandleDropped = { side, fraction ->
                 lifecycleScope.launch {
-                    // The handle goes back where it was (put there directly: the undo may never show
-                    // in the settings flow); say why (no drawer is open to show it in).
+                    // The undo puts the handle back where it was (see repo.settings); say why (no
+                    // drawer is open to show it in).
                     if (!repo.update { it.copy(side = side, yFraction = fraction) }) {
-                        latestSettings?.let(host::showHandle)
                         toastSaveFailed()
                     }
                 }
@@ -198,8 +197,8 @@ class EdgeService : LifecycleService() {
         lifecycleScope.launch {
             appsChanged(this@EdgeService).collect(::onAppChanged)
         }
-        pinnedKeys = repo.state.map { it?.apps }.distinctUntilChanged()
-            .stateIn(lifecycleScope, SharingStarted.Eagerly, repo.state.value?.apps)
+        pinnedKeys = repo.settings.map { it.apps }.distinctUntilChanged()
+            .stateIn(lifecycleScope, SharingStarted.Eagerly, repo.value?.apps)
         lifecycleScope.launch { pinnedApps().collect { pinned.value = it } }
     }
 
@@ -212,7 +211,7 @@ class EdgeService : LifecycleService() {
         val keys = pinnedKeys.filterNotNull()
         // Loaded by the set of pinned apps: a reorder needs no reload (and shows no spinner).
         // The app changes the last load waited for (see below).
-        var settledChanges = 0
+        var settledChanges = pinnedAppsChanges.value
         val loaded: Flow<LoadedPinned<LaunchableApp>?> = combine(
             keys.map { it.toSet() }.distinctUntilChanged(),
             pinnedAppsChanges,
@@ -230,19 +229,19 @@ class EdgeService : LifecycleService() {
                 }
                 // Sized to the pinned apps (no LRU limit to thrash), minus any unpinned since.
                 pinnedIcons.retain(set)
-                // A few attempts with backoff (e.g. LauncherApps not ready after boot), then the
-                // failure is reported and it stops; opening a drawer asks for another go. Not
-                // forever: this service runs all the time, mostly with nobody looking.
+                // A few attempts with backoff (e.g. LauncherApps not ready after boot), also while
+                // some apps can't be listed; then what it has is used (an outright failure is
+                // reported, and opening a drawer asks for another go). Not forever: this service
+                // runs all the time, mostly with nobody looking.
                 var apps: Resolved? = null
                 for (attempt in 0 until LOAD_ATTEMPTS) {
                     if (attempt > 0) {
                         delay(LOAD_RETRY_MS shl (attempt - 1))
                     }
-                    apps = withContext(Dispatchers.Default) { catalog.resolveDrawn(pinnedIcons, set.toList()) }
-                    // Retried here only if it failed outright. Apps that couldn't be listed keep
-                    // their earlier copy and count as failed, so opening the drawer tries them
-                    // again (once: see keep()).
-                    if (apps != null) {
+                    // An attempt that fails outright doesn't replace a partial one.
+                    val got = withContext(Dispatchers.Default) { catalog.resolveDrawn(pinnedIcons, set.toList()) }
+                    apps = got ?: apps
+                    if (got != null && got.unknown.isEmpty()) {
                         break
                     }
                 }
@@ -282,8 +281,12 @@ class EdgeService : LifecycleService() {
         // already is).
         val shownPinned = mutableStateOf(pinned.value)
         // Their order: the settings' order, mirrored here as Compose state so a drag's new order
-        // (applied to the settings at once) shows in the same frame.
+        // (applied to the settings at once) shows in the same frame. Only ever copied from the
+        // settings (see syncOrder()), never set to anything else.
         val order = mutableStateOf(latestSettings?.apps.orEmpty())
+        fun syncOrder() {
+            latestSettings?.let { order.value = it.apps }
+        }
         // A short message in the drawer (e.g. an app that couldn't be started), and a trigger to read
         // recents again.
         val notice = mutableStateOf<String?>(null)
@@ -296,8 +299,10 @@ class EdgeService : LifecycleService() {
             // can't be launched from the list still shown).
             pinned.collect { p -> shownPinned.value = p }
         }
+        // Every change of the settings, including the undo of a failed save (pinnedKeys could
+        // miss that: from its view nothing may have changed).
         lifecycleScope.launch(drawerJob) {
-            pinnedKeys.filterNotNull().collect { keys -> order.value = keys }
+            repo.settings.collect { syncOrder() }
         }
 
         /** Shows [text] in the drawer for a moment (a toast would sit behind it). */
@@ -342,14 +347,11 @@ class EdgeService : LifecycleService() {
                 // The settings take it at once (saving in the background, and reverting it if that
                 // fails, which the order follows); mirrored here so it shows in this frame.
                 val saved = repo.change { it.copy(apps = it.apps.withVisibleOrder(shownOrder)) }
-                repo.state.value?.let { order.value = it.apps }
+                syncOrder()
                 // Not tied to this drawer: a drag saved as the drawer closes still reports failure.
                 lifecycleScope.launch {
                     if (!saved.await()) {
                         if (drawerJob.isActive) {
-                            // Put back directly: the undo may never show in the keys flow (it can
-                            // land before that flow saw the change, leaving it nothing new to emit).
-                            repo.state.value?.let { order.value = it.apps }
                             showNotice(getString(R.string.settings_save_failed))
                         } else {
                             toastSaveFailed()

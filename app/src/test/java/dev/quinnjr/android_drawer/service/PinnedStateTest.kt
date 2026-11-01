@@ -14,7 +14,7 @@ class PinnedStateTest {
     private val c = AppKey("c/c.C", 0L)
 
     private fun load(vararg keys: AppKey, failed: Boolean = false) =
-        LoadedPinned(keys.toSet(), if (failed) null else keys.associateWith { it.component })
+        LoadedPinned(keys.toSet(), if (failed) { null } else { keys.associateWith { it.component } })
 
     @Test
     fun `nothing kept before the first load`() {
@@ -69,10 +69,10 @@ class PinnedStateTest {
     }
 
     @Test
-    fun `an incomplete load (some apps couldn't be listed) shows what it has, as failed`() {
+    fun `an incomplete load (some apps couldn't be listed) shows what it has, as current`() {
         val partial = LoadedPinned(setOf(a, b), mapOf(a to "a/a.A"), unknown = setOf(b))
         val kept = null.keep(partial)!!
-        assertEquals(PinnedStatus.FAILED, kept.status(setOf(a, b)))
+        assertEquals(PinnedStatus.CURRENT, kept.status(setOf(a, b)))
         assertEquals(listOf("a/a.A"), kept.load.ordered(listOf(a, b)))
     }
 
@@ -82,30 +82,7 @@ class PinnedStateTest {
         val partial = LoadedPinned(setOf(a, b, c), mapOf(a to "a/a.A", b to "b/b.B"), unknown = setOf(c))
         val kept = good.keep(partial)!!
         assertEquals(listOf("a/a.A", "b/b.B", "c/c.C"), kept.load.ordered(listOf(a, b, c)))
-        assertEquals(PinnedStatus.FAILED, kept.status(setOf(a, b, c)))
-    }
-
-    @Test
-    fun `an app still unlisted after its retry is left out and no longer counts as failed`() {
-        val good = null.keep(load(a, b))
-        val partial = LoadedPinned(setOf(a, b), mapOf(a to "a/a.A"), unknown = setOf(b))
-        val afterRetry = LoadedPinned(setOf(a, b), mapOf(a to "a/a.A"), unknown = setOf(b), retry = 1)
-        val retried = good.keep(partial).keep(null).keep(afterRetry)!!
-        assertEquals(listOf("a/a.A"), retried.load.ordered(listOf(a, b)))
-        assertEquals(PinnedStatus.CURRENT, retried.status(setOf(a, b)))
-        // Still left out through later reloads, until it lists again.
-        val later = retried.keep(null).keep(afterRetry)!!
-        assertEquals(PinnedStatus.CURRENT, later.status(setOf(a, b)))
-        assertEquals(listOf("a/a.A", "b/b.B"), later.keep(load(a, b))!!.load.ordered(listOf(a, b)))
-    }
-
-    @Test
-    fun `a reload that isn't a retry keeps an unlisted app's earlier copy, still failed`() {
-        val good = null.keep(load(a, b))
-        val partial = LoadedPinned(setOf(a, b), mapOf(a to "a/a.A"), unknown = setOf(b))
-        val again = good.keep(partial).keep(null).keep(partial)!!
-        assertEquals(listOf("a/a.A", "b/b.B"), again.load.ordered(listOf(a, b)))
-        assertEquals(PinnedStatus.FAILED, again.status(setOf(a, b)))
+        assertEquals(PinnedStatus.CURRENT, kept.status(setOf(a, b, c)))
     }
 
     @Test

@@ -57,7 +57,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     val saveFailures: Flow<Unit> = failedSaves.receiveAsFlow()
 
     /** The settings; null until first read. */
-    val settings: StateFlow<DrawerSettings?> = repo.state
+    val settings: StateFlow<DrawerSettings?> = repo.settings.stateIn(viewModelScope, SharingStarted.Eagerly, repo.value)
 
     /**
      * App changes, watched for as long as this ViewModel lives so [icons] never misses one; a

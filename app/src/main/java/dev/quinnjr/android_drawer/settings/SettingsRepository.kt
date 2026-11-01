@@ -26,11 +26,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.filterNotNull
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -45,15 +44,23 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
 /**
  * The app's settings: one instance per process ([get]), holding them in memory. A change is applied
  * there at once (every reader sees it immediately), then saved; if saving fails, memory goes back
- * to what is on disk. The file is followed too, so a write from elsewhere (e.g. a backup being
- * restored) shows up, unless a change of ours is still being saved over it.
+ * to what is on disk. This process is the file's only writer, and it's read once: an Auto Backup
+ * restore shuts the app down first, so the restored file is read when it next starts.
  */
 class SettingsRepository private constructor(context: Context) {
     private val store = context.applicationContext.dataStore
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val writeLock = Mutex()
     private val stateLock = Any()
-    private val current = MutableStateFlow<DrawerSettings?>(null)
+
+    /** One state of the settings in memory; each is new ([n]), even one equal to an earlier one. */
+    private class Revision(val settings: DrawerSettings, val n: Long)
+
+    private val current = MutableStateFlow<Revision?>(null)
+    /** Completes once the settings are read: false if reading them was given up on. */
+    private val read = CompletableDeferred<Boolean>()
+    /** Counts the [Revision]s (under [stateLock]). */
+    private var revisions = 0L
     /** Counts changes made in memory (under [stateLock]). */
     private var version = 0L
     /** The settings as last read from or written to disk, and the [version] they were (under [stateLock]). */
@@ -62,20 +69,24 @@ class SettingsRepository private constructor(context: Context) {
     /** Changes up to this [version] were undone after a failed save (under [stateLock]). */
     private var undoneThrough = 0L
 
-    /** The settings; null until first read. */
-    val state: StateFlow<DrawerSettings?> = current.asStateFlow()
+    /** The settings now; null until first read. */
+    val value: DrawerSettings? get() = current.value?.settings
 
-    /** The settings as they change (after the first read). */
-    val settings: Flow<DrawerSettings> = current.filterNotNull()
+    /**
+     * The settings as they change (after the first read). Every change is delivered, including
+     * one undone after its save failed: going back to an earlier value is a change too, so anyone
+     * who showed the failed one ahead of time (e.g. a dragged handle) is put back.
+     */
+    val settings: Flow<DrawerSettings> = current.filterNotNull().map { it.settings }
 
     init {
         // A read error is retried with backoff rather than made up for: defaults (handle on, no
         // apps) could undo what the user chose. I/O errors (e.g. storage not ready) are retried
         // for as long as they last; anything else a few times, then given up on and logged (the
-        // settings stay unread: no handle, and the app says nothing worse than that).
+        // settings stay unread: no handle, and changes report failure).
         scope.launch {
             var otherErrors = 0
-            store.data
+            val stored = store.data
                 .retryWhen { cause, attempt ->
                     val retry = cause is IOException || otherErrors++ < OTHER_ERROR_RETRIES
                     if (retry) {
@@ -85,16 +96,21 @@ class SettingsRepository private constructor(context: Context) {
                     retry
                 }
                 .catch { e -> Log.e(TAG, "Could not read settings; giving up", e) }
-                .collect { prefs -> fromDisk(prefs.toSettings()) }
+                .firstOrNull()
+                ?.toSettings()
+            if (stored != null) {
+                synchronized(stateLock) {
+                    onDisk = stored
+                    show(stored)
+                }
+            }
+            read.complete(stored != null)
         }
     }
 
-    /** The file as read: taken as the settings unless a change of ours isn't saved yet. */
-    private fun fromDisk(stored: DrawerSettings) = synchronized(stateLock) {
-        if (current.value == null || version == onDiskVersion) {
-            onDisk = stored
-            current.value = stored
-        }
+    /** Makes [settings] the current ones, as a new revision (under [stateLock]). */
+    private fun show(settings: DrawerSettings) {
+        current.value = Revision(settings, ++revisions)
     }
 
     /**
@@ -102,13 +118,17 @@ class SettingsRepository private constructor(context: Context) {
      * result says whether this change reached the disk. Each save writes the latest settings, so
      * saves finishing out of order never leave an older value on disk. If saving fails, it's tried
      * again with any later change made meanwhile; otherwise memory goes back to what is on disk.
-     * Saves complete even if the caller goes away. False straight away if the settings haven't been
-     * read yet.
+     * Saves complete even if the caller goes away. True at once if nothing changes; false at once
+     * if the settings haven't been read.
      */
     fun change(transform: (DrawerSettings) -> DrawerSettings): Deferred<Boolean> {
         val mine = synchronized(stateLock) {
-            val before = current.value ?: return CompletableDeferred(false)
-            current.value = transform(before)
+            val before = current.value?.settings ?: return CompletableDeferred(false)
+            val next = transform(before)
+            if (next == before) {
+                return CompletableDeferred(true)
+            }
+            show(next)
             ++version
         }
         return scope.async { writeLock.withLock { save(mine) } }
@@ -119,14 +139,14 @@ class SettingsRepository private constructor(context: Context) {
         while (true) {
             val (next, nextVersion) = synchronized(stateLock) {
                 // Undone after a save failed, or already written by a later change's save (which
-                // wrote this one too). In that order: an undo also brings the disk version up.
+                // wrote this one too).
                 if (undoneThrough >= mine) {
                     return false
                 }
                 if (onDiskVersion >= mine) {
                     return true
                 }
-                checkNotNull(current.value) to version
+                checkNotNull(current.value).settings to version
             }
             try {
                 store.edit { prefs -> write(prefs, next) }
@@ -142,10 +162,8 @@ class SettingsRepository private constructor(context: Context) {
                 synchronized(stateLock) {
                     // Nothing newer to try: back to what's on disk.
                     if (version == nextVersion) {
-                        current.value = onDisk
+                        show(checkNotNull(onDisk))
                         undoneThrough = nextVersion
-                        // Memory matches the disk again, so the file is followed again.
-                        onDiskVersion = nextVersion
                         return false
                     }
                 }
@@ -154,9 +172,14 @@ class SettingsRepository private constructor(context: Context) {
         }
     }
 
-    /** [change], once the settings have been read, waiting for the save: true if it worked. */
+    /**
+     * [change], once the settings have been read, waiting for the save: true if it worked (false
+     * if the settings couldn't be read).
+     */
     suspend fun update(transform: (DrawerSettings) -> DrawerSettings): Boolean {
-        current.filterNotNull().first()
+        if (!read.await()) {
+            return false
+        }
         return change(transform).await()
     }
 
