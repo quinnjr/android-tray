@@ -114,7 +114,7 @@ fun DrawerPanel(
     /** The pinned apps; null while they're still loading. */
     apps: State<List<LaunchableApp>?>,
     /** The apps shown are being reloaded (an app or the display changed). */
-    reloading: State<Boolean>,
+    status: State<PinnedStatus>,
     /** Recently used apps; null while they're still being read (their space is kept meanwhile). */
     recent: State<List<LaunchableApp>?>,
     /** Whether to show the recents section at all (usage access granted). */
@@ -173,7 +173,7 @@ fun DrawerPanel(
                                 ),
                         ) {
                             Panel(
-                                apps, reloading, recent, expectRecents, hasPinned, fromRight, iconsLocked,
+                                apps, status, recent, expectRecents, hasPinned, fromRight, iconsLocked,
                                 onLaunch, onReorder, onOpenSettings, onRecentsNeeded, onDismiss,
                             )
                         }
@@ -188,7 +188,7 @@ fun DrawerPanel(
 private fun Panel(
     apps: State<List<LaunchableApp>?>,
     /** The apps shown are being reloaded (an app or the display changed). */
-    reloading: State<Boolean>,
+    status: State<PinnedStatus>,
     recent: State<List<LaunchableApp>?>,
     /** Whether to show the recents section at all (usage access granted). */
     expectRecents: Boolean,
@@ -257,10 +257,10 @@ private fun Panel(
                 }
                 Box(Modifier.weight(1f)) {
                     val pinned = apps.value
-                    val isReloading = reloading.value
+                    val current = status.value
                     when {
                         // Nothing loaded yet (or only an empty list, being reloaded).
-                        pinned == null || (pinned.isEmpty() && isReloading) -> CircularProgressIndicator(
+                        pinned == null || (pinned.isEmpty() && current == PinnedStatus.RELOADING) -> CircularProgressIndicator(
                             color = LABEL_COLOR,
                             modifier = Modifier.align(Alignment.Center).size(32.dp),
                         )
@@ -268,14 +268,21 @@ private fun Panel(
                         else -> {
                             // Stays composed while reloading (the last list is kept), so a press or
                             // drag under way and the scroll position survive. Taps launch at once: an
-                            // app gone meanwhile just isn't started. The reload only shows as a hint.
+                            // app gone meanwhile just isn't started. The status shows as a hint.
                             PinnedGrid(pinned, iconsLocked, onLaunch, onReorder)
-                            if (isReloading) {
-                                CircularProgressIndicator(
+                            when (current) {
+                                PinnedStatus.RELOADING -> CircularProgressIndicator(
                                     color = LABEL_COLOR,
                                     strokeWidth = 2.dp,
                                     modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).size(16.dp),
                                 )
+                                PinnedStatus.FAILED -> Text(
+                                    "Couldn't refresh",
+                                    color = LABEL_COLOR.copy(alpha = 0.6f),
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.align(Alignment.BottomCenter).padding(4.dp),
+                                )
+                                PinnedStatus.CURRENT -> Unit
                             }
                         }
                     }
@@ -381,7 +388,11 @@ private fun PinnedGrid(
     fun finishDrag() {
         val keys = drag.order
         if (drag.key != null && drag.moved && keys != null) {
-            currentOnReorder(currentLatest.arrangedBy(keys) { it.key }.map { it.key }.filter { it in drag.members })
+            val chosen = currentLatest.arrangedBy(keys) { it.key }.map { it.key }.filter { it in drag.members }
+            // Moved and moved back: nothing to save.
+            if (chosen != drag.start.filter { it in chosen }) {
+                currentOnReorder(chosen)
+            }
         }
         drag.clear()
     }
@@ -476,10 +487,14 @@ private class GridDrag {
     /** The apps there when the drag began: only their order is saved (one pinned meanwhile keeps its place). */
     var members: Set<AppKey> = emptySet()
         private set
+    /** Their order when the drag began. */
+    var start: List<AppKey> = emptyList()
+        private set
 
     fun begin(key: AppKey, apps: List<LaunchableApp>) {
         order = apps.map { it.key }
-        members = apps.mapTo(HashSet()) { it.key }
+        start = apps.map { it.key }
+        members = start.toHashSet()
         moved = false
         this.key = key
     }

@@ -228,14 +228,16 @@ class AppCatalog(context: Context) {
         user = user,
     )
 
-    fun launch(app: LaunchableApp, sourceBounds: Rect?) {
-        try {
-            launcherApps.startMainActivity(app.component, app.user, sourceBounds, null)
-        } catch (e: ActivityNotFoundException) {
-            Log.w(TAG, "App vanished: ${app.component}", e)
-        } catch (e: SecurityException) {
-            Log.w(TAG, "Not allowed to launch ${app.component}", e)
-        }
+    /** Starts [app]; false if it couldn't be (e.g. it was uninstalled or its profile paused). */
+    fun launch(app: LaunchableApp, sourceBounds: Rect?): Boolean = try {
+        launcherApps.startMainActivity(app.component, app.user, sourceBounds, null)
+        true
+    } catch (e: ActivityNotFoundException) {
+        Log.w(TAG, "App vanished: ${app.component}", e)
+        false
+    } catch (e: SecurityException) {
+        Log.w(TAG, "Not allowed to launch ${app.component}", e)
+        false
     }
 
     companion object {

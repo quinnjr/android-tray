@@ -1,5 +1,6 @@
 package dev.quinnjr.android_drawer.service
 
+import dev.quinnjr.android_drawer.overlay.PinnedStatus
 import dev.quinnjr.android_drawer.settings.AppKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -12,8 +13,8 @@ class PinnedStateTest {
     private val b = AppKey("b/b.B", 0L)
     private val c = AppKey("c/c.C", 0L)
 
-    private fun load(vararg keys: AppKey, failed: Boolean = false) =
-        LoadedPinned(keys.toSet(), if (failed) null else keys.associateWith { it.component })
+    private fun load(vararg keys: AppKey, failed: Boolean = false, retry: Int = 0) =
+        LoadedPinned(keys.toSet(), if (failed) null else keys.associateWith { it.component }, retry)
 
     @Test
     fun `nothing kept before the first load`() {
@@ -38,26 +39,33 @@ class PinnedStateTest {
     }
 
     @Test
-    fun `a failure with nothing to keep is shown as a failure`() {
-        val failed = null.keep(load(a, failed = true))!!
-        assertTrue(failed.failed)
-        assertNull(failed.load.apps)
-    }
-
-    @Test
     fun `the saved order is applied after keeping, so a kept load shows the current order and set`() {
-        // Loaded [a, b, c]; then b was unpinned and the rest reordered, and that reload failed.
         val kept = null.keep(load(a, b, c)).keep(load(c, a, failed = true))!!
         assertEquals(listOf("c/c.C", "a/a.A"), kept.load.ordered(listOf(c, a)))
     }
 
     @Test
-    fun `only a change in the app-change counter waits for the burst to settle`() {
-        val first = LoadInputs(setOf(a), change = 0, trigger = 0).after(null)
-        assertFalse(first.settle)
-        val changed = LoadInputs(setOf(a), change = 1, trigger = 0).after(first)
-        assertTrue(changed.settle)
-        val reordered = LoadInputs(setOf(a, b), change = 1, trigger = 0).after(changed)
-        assertFalse(reordered.settle)
+    fun `status is current for a load of exactly these keys`() {
+        assertEquals(PinnedStatus.CURRENT, null.keep(load(a, b))!!.status(setOf(a, b), retryRequested = 0))
+    }
+
+    @Test
+    fun `a load for a different set means its reload is on the way`() {
+        assertEquals(PinnedStatus.RELOADING, null.keep(load(a, b))!!.status(setOf(a, b, c), retryRequested = 0))
+    }
+
+    @Test
+    fun `a failure shows as reloading once a retry has been asked for`() {
+        val failed = null.keep(load(a, failed = true))!!
+        assertEquals(PinnedStatus.FAILED, failed.status(setOf(a), retryRequested = 0))
+        assertEquals(PinnedStatus.RELOADING, failed.status(setOf(a), retryRequested = 1))
+    }
+
+    @Test
+    fun `a load waits until the last app change has settled, whatever else triggers it`() {
+        val inputs = LoadInputs(setOf(a), changedAt = 1_000L, trigger = null)
+        assertEquals(300L, inputs.settleDelay(now = 1_200L, settleMs = 500L))
+        assertEquals(0L, inputs.settleDelay(now = 2_000L, settleMs = 500L))
+        assertEquals(0L, LoadInputs(setOf(a), changedAt = 0L, trigger = null).settleDelay(now = 100L, settleMs = 500L))
     }
 }

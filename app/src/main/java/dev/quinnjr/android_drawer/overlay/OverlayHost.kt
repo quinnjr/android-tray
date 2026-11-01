@@ -108,12 +108,13 @@ class OverlayHost(
     fun openDrawer(
         /** The pinned apps; null while they're still loading (the drawer shows meanwhile). */
         apps: State<List<LaunchableApp>?>,
-        /** The apps shown are being reloaded (a visual hint; launching from them is still fine). */
-        reloading: State<Boolean>,
+        /** How current the apps shown are (shown as a hint; launching from them is still fine). */
+        status: State<PinnedStatus>,
         hasPinned: State<Boolean>,
         recent: State<List<LaunchableApp>?>,
         expectRecents: Boolean,
-        onLaunch: (LaunchableApp, Rect?) -> Unit,
+        /** Starts an app; false if it couldn't be (the drawer then stays open). */
+        onLaunch: (LaunchableApp, Rect?) -> Boolean,
         onReorder: (List<AppKey>) -> Unit,
         onOpenSettings: () -> Unit,
         /** Called once the drawer has been removed. */
@@ -135,7 +136,7 @@ class OverlayHost(
         compose.setContent {
             DrawerPanel(
                 apps = apps,
-                reloading = reloading,
+                status = status,
                 recent = recent,
                 hasPinned = hasPinned,
                 expectRecents = expectRecents,
@@ -144,8 +145,9 @@ class OverlayHost(
                 iconsLocked = s.iconsLocked,
                 // Cells stay clickable during the exit animation; ignore taps once closing.
                 onLaunch = { app, bounds ->
-                    if (state.targetState) {
-                        onLaunch(app, bounds)
+                    // Closes only once an app actually started: tapping one gone meanwhile (e.g.
+                    // uninstalled while the list reloaded) leaves the drawer open.
+                    if (state.targetState && onLaunch(app, bounds)) {
                         closeDrawer()
                     }
                 },

@@ -1,9 +1,10 @@
 package dev.quinnjr.android_drawer.service
 
+import dev.quinnjr.android_drawer.overlay.PinnedStatus
 import dev.quinnjr.android_drawer.settings.AppKey
 
-/** The apps loaded for a set of pinned [keys]; [apps] null if the load failed. */
-internal class LoadedPinned<T>(val keys: Set<AppKey>, val apps: Map<AppKey, T>?) {
+/** The apps loaded for a set of pinned [keys] ([apps] null if the load failed), as of retry [retry]. */
+internal class LoadedPinned<T>(val keys: Set<AppKey>, val apps: Map<AppKey, T>?, val retry: Int) {
     /** These apps in [order] (keys not loaded are left out); null if the load failed. */
     fun ordered(order: List<AppKey>): List<T>? = apps?.let { byKey -> order.mapNotNull(byKey::get) }
 }
@@ -23,10 +24,26 @@ internal fun <T> KeptLoad<T>?.keep(next: LoadedPinned<T>?): KeptLoad<T>? = when 
 }
 
 /**
- * What a pinned-apps load depends on: the pinned [set], the app-change counter [change], and other
- * [trigger]s (display config, retries). [settle]: this load follows an app change, so it waits for
- * a burst of changes (e.g. many updates) to settle first.
+ * How current this kept load is for the pinned [keys], given the retries asked for so far: a
+ * reload under way, a retry asked for but not yet loaded, or a load for another set (its reload
+ * is on the way) all count as reloading.
  */
-internal data class LoadInputs(val set: Set<AppKey>, val change: Int, val trigger: Any?, val settle: Boolean = false) {
-    fun after(previous: LoadInputs?) = copy(settle = previous != null && change != previous.change)
+internal fun <T> KeptLoad<T>.status(keys: Set<AppKey>, retryRequested: Int): PinnedStatus = when {
+    reloading || load.retry < retryRequested -> PinnedStatus.RELOADING
+    failed -> PinnedStatus.FAILED
+    load.keys != keys -> PinnedStatus.RELOADING
+    else -> PinnedStatus.CURRENT
+}
+
+/**
+ * What a pinned-apps load depends on: the pinned [set], when an app last changed ([changedAt],
+ * elapsed-realtime ms; 0 if never), the [retry] count, and other [trigger]s (the display config).
+ */
+internal data class LoadInputs(val set: Set<AppKey>, val changedAt: Long, val trigger: Any?, val retry: Int = 0) {
+    /**
+     * How long to wait before loading: until [settleMs] after the last app change, so a burst of
+     * changes (e.g. many updates) loads once, whatever else triggers the load meanwhile.
+     */
+    fun settleDelay(now: Long, settleMs: Long): Long =
+        if (changedAt == 0L) { 0L } else { (changedAt + settleMs - now).coerceAtLeast(0L) }
 }
