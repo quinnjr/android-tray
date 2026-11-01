@@ -84,6 +84,7 @@ import androidx.compose.ui.zIndex
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.Side
+import dev.quinnjr.android_drawer.settings.arrangedBy
 import dev.quinnjr.android_drawer.settings.moved
 import dev.quinnjr.android_drawer.ui.AppIcon
 import dev.quinnjr.android_drawer.ui.theme.AppTheme
@@ -342,7 +343,7 @@ private fun PinnedGrid(
     // meanwhile mustn't move icons under the finger, but updated icons show, removed apps go (the
     // drag ends, saving the other moves, if it's the dragged one) and newly pinned ones are added at
     // the end. The released order then shows at once: the drawer applies it while it saves.
-    val dragged = remember(drag.order, latest) { drag.order?.let { onto(it, latest) } }
+    val dragged = remember(drag.order, latest) { drag.order?.let { order -> latest.arrangedBy(order) { it.key } } }
     val draggedAppGone = drag.key != null && dragged != null && dragged.none { it.key == drag.key }
     val order = dragged ?: latest
     val currentOrder by rememberUpdatedState(order)
@@ -380,7 +381,7 @@ private fun PinnedGrid(
     fun finishDrag() {
         val keys = drag.order
         if (drag.key != null && drag.moved && keys != null) {
-            currentOnReorder(onto(keys, currentLatest).map { it.key }.filter { it in drag.members })
+            currentOnReorder(currentLatest.arrangedBy(keys) { it.key }.map { it.key }.filter { it in drag.members })
         }
         drag.clear()
     }
@@ -488,13 +489,6 @@ private class GridDrag {
         order = null
         moved = false
     }
-}
-
-/** [keys] in order mapped onto [apps]: missing ones dropped, apps not among them appended. */
-private fun onto(keys: List<AppKey>, apps: List<LaunchableApp>): List<LaunchableApp> {
-    val byKey = apps.associateBy { it.key }
-    val inKeys = keys.toSet()
-    return keys.mapNotNull(byKey::get) + apps.filter { it.key !in inKeys }
 }
 
 @Composable

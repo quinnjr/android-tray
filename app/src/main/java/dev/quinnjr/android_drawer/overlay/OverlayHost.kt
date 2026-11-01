@@ -108,7 +108,7 @@ class OverlayHost(
     fun openDrawer(
         /** The pinned apps; null while they're still loading (the drawer shows meanwhile). */
         apps: State<List<LaunchableApp>?>,
-        /** The apps shown are being reloaded: shown, but not launched from. */
+        /** The apps shown are being reloaded (a visual hint; launching from them is still fine). */
         reloading: State<Boolean>,
         hasPinned: State<Boolean>,
         recent: State<List<LaunchableApp>?>,

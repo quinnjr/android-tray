@@ -71,3 +71,13 @@ internal fun encodeApps(apps: List<AppKey>): String = apps.joinToString("\n") { 
 
 /** Duplicates (e.g. from a restored or hand-edited file) are dropped: every list relies on unique keys. */
 internal fun decodeApps(s: String): List<AppKey> = s.lineSequence().mapNotNull(AppKey::decode).distinct().toList()
+
+/**
+ * These items arranged by [order] (matched by [key]): keys in [order] without an item are skipped,
+ * and items whose key isn't in [order] come after, in their own order.
+ */
+internal fun <T, K> List<T>.arrangedBy(order: List<K>, key: (T) -> K): List<T> {
+    val byKey = associateBy(key)
+    val inOrder = order.toSet()
+    return order.mapNotNull(byKey::get) + filter { key(it) !in inOrder }
+}

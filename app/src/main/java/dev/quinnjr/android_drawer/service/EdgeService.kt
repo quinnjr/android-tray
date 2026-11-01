@@ -39,12 +39,12 @@ import dev.quinnjr.android_drawer.apps.Resolved
 import dev.quinnjr.android_drawer.apps.appsChanged
 import dev.quinnjr.android_drawer.apps.orOnFailure
 import dev.quinnjr.android_drawer.apps.resolveDrawn
-import dev.quinnjr.android_drawer.apps.settled
 import dev.quinnjr.android_drawer.overlay.DRAWER_ICON_SIZE
 import dev.quinnjr.android_drawer.overlay.OverlayHost
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.SettingsRepository
+import dev.quinnjr.android_drawer.settings.arrangedBy
 import dev.quinnjr.android_drawer.settings.withVisibleOrder
 import dev.quinnjr.android_drawer.ui.MainActivity
 import kotlinx.coroutines.Dispatchers
@@ -62,6 +62,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.scan
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
@@ -91,23 +92,14 @@ class EdgeService : LifecycleService() {
     /** Bumped at once on any change to a pinned app (or to many/all apps), before any debounce. */
     private val pinnedAppsChanged = MutableStateFlow(0)
 
-    /** Pinned [apps] loaded for [keys]; [apps] null if loading failed. [load]: which load (by identity). */
-    private data class Pinned(
-        val keys: List<AppKey>,
-        val apps: List<LaunchableApp>?,
-        val load: LoadedPinned,
-        /** Being reloaded (an app or the display changed); shown meanwhile, with a hint. */
-        val reloading: Boolean = false,
-        /** The latest reload failed; this is the list from before it. A drawer opening retries. */
-        val failed: Boolean = false,
-    ) {
-        /** These apps in [order]. */
-        fun inOrder(order: List<AppKey>) = copy(keys = order, apps = load.ordered(order))
-
-        companion object {
-            /** The apps of [load] in [order]. */
-            fun of(load: LoadedPinned, order: List<AppKey>) = Pinned(order, load.ordered(order), load)
-        }
+    /**
+     * The pinned [keys] in their saved order and the [apps] for them (null if loading failed), from
+     * [kept]: the latest load, or the last good one while reloading or after a failure (see keep()).
+     */
+    private data class Pinned(val keys: List<AppKey>, val kept: KeptLoad<LaunchableApp>) {
+        val apps: List<LaunchableApp>? = kept.load.ordered(keys)
+        val reloading: Boolean get() = kept.reloading
+        val failed: Boolean get() = kept.failed
     }
     /** The settings the handle is showing; null until first read. */
     private lateinit var settings: StateFlow<DrawerSettings?>
@@ -120,6 +112,8 @@ class EdgeService : LifecycleService() {
      */
     private var pendingOrder by mutableStateOf<List<AppKey>?>(null)
     private val saveOrderLock = Mutex()
+    /** Counts settings updates as they arrive, so a save can wait for the one after its write. */
+    private val settingsUpdates = MutableStateFlow(0)
     /** Bumped to reload the pinned apps after a failed load (e.g. when a drawer opens). */
     private val pinnedRetry = MutableStateFlow(0)
     /** What app labels and icons depend on; the caches are re-warmed when it changes. */
@@ -185,6 +179,7 @@ class EdgeService : LifecycleService() {
         settings = repo.settings.stateIn(lifecycleScope, SharingStarted.Eagerly, null)
         lifecycleScope.launch {
             settings.filterNotNull().collect { s ->
+                settingsUpdates.value++
                 if (!s.enabled || !Settings.canDrawOverlays(this@EdgeService)) {
                     stop()
                 } else {
@@ -223,61 +218,49 @@ class EdgeService : LifecycleService() {
      * updates) to settle before reloading.
      */
     private fun pinnedApps(): Flow<Pinned?> {
+        // Read once and shared by both uses below.
         val keys = settings.filterNotNull().map { it.apps }.distinctUntilChanged()
+            .shareIn(lifecycleScope, SharingStarted.Eagerly, replay = 1)
         // Loaded by the set of pinned apps: a reorder needs no reload (and shows no spinner).
-        val loaded = combine(
+        val loaded: Flow<LoadedPinned<LaunchableApp>?> = combine(
             keys.map { it.toSet() }.distinctUntilChanged(),
-            // Every change empties it at once (a load in flight could be stale); it reloads only
-            // once the settled copy catches up, i.e. after a burst of changes has settled.
             pinnedAppsChanged,
-            // The first value (no change yet) isn't held back, only changes are.
-            pinnedAppsChanged.settled(holdFirst = false),
             displayConfig.filterNotNull(),
             pinnedRetry,
-        ) { set, change, settledChange, _, _ -> LoadInputs(set, change, settledChange) }
-            .transformLatest { (set, change, settledChange) ->
+        ) { set, change, config, retry -> LoadInputs(set, change, config to retry) }
+            .scan<LoadInputs, LoadInputs?>(null) { previous, inputs -> inputs.after(previous) }
+            .filterNotNull()
+            .transformLatest { inputs ->
+                val set = inputs.set
+                // Every change marks a reload at once; after an app change it waits for the burst
+                // (e.g. many updates) to settle, and a further change restarts the wait.
                 emit(null)
-                if (change == settledChange) {
-                    // Sized to the pinned apps (no LRU limit to thrash), minus any unpinned since.
-                    pinnedIcons.retain(set)
-                    // A few attempts with backoff (e.g. LauncherApps not ready after boot), then the
-                    // failure is reported and it stops; opening a drawer asks for another go. Not
-                    // forever: this service runs all the time, mostly with nobody looking.
-                    var apps: Resolved? = null
-                    for (attempt in 0 until LOAD_ATTEMPTS) {
-                        if (attempt > 0) {
-                            delay(LOAD_RETRY_MS shl (attempt - 1))
-                        }
-                        apps = withContext(Dispatchers.Default) { catalog.resolveDrawn(pinnedIcons, set.toList()) }
-                        if (apps != null) {
-                            break
-                        }
+                if (inputs.settle) {
+                    delay(APPS_CHANGED_SETTLE_MS)
+                }
+                // Sized to the pinned apps (no LRU limit to thrash), minus any unpinned since.
+                pinnedIcons.retain(set)
+                // A few attempts with backoff (e.g. LauncherApps not ready after boot), then the
+                // failure is reported and it stops; opening a drawer asks for another go. Not
+                // forever: this service runs all the time, mostly with nobody looking.
+                var apps: Resolved? = null
+                for (attempt in 0 until LOAD_ATTEMPTS) {
+                    if (attempt > 0) {
+                        delay(LOAD_RETRY_MS shl (attempt - 1))
                     }
-                    emit(LoadedPinned(set, apps?.apps?.associateBy { it.key }))
+                    apps = withContext(Dispatchers.Default) { catalog.resolveDrawn(pinnedIcons, set.toList()) }
+                    if (apps != null) {
+                        break
+                    }
                 }
+                emit(LoadedPinned(set, apps?.apps?.associateBy { it.key }))
             }
-        // ...then put in the saved order (a drawer applies any not-yet-saved one on top).
-        return combine(keys, loaded) { order, load -> load?.takeIf { it.keys == order.toSet() }?.let { Pinned.of(it, order) } }
-            // While reloading, or retrying a failed reload, the last list stays (marked reloading)
-            // rather than vanishing, so an open drawer keeps its grid, scroll and any press under way.
-            .scan<Pinned?, Pinned?>(null) { last, next ->
-                when {
-                    next == null -> last?.copy(reloading = true)
-                    // Failed with a list to show: keep it (launching from it is safe), marked failed.
-                    next.apps == null && last?.apps != null -> last.copy(reloading = false, failed = true)
-                    else -> next
-                }
-            }
-            .distinctUntilChanged()
+        // While reloading, or after a reload failed, the last good load is kept (so an open drawer
+        // keeps its grid, scroll and any press under way); the current saved order is applied after,
+        // so a kept load still shows a reorder saved meanwhile and leaves out apps unpinned since.
+        val kept = loaded.scan<LoadedPinned<LaunchableApp>?, KeptLoad<LaunchableApp>?>(null) { last, next -> last.keep(next) }
+        return combine(keys, kept) { order, k -> k?.let { Pinned(order, it) } }.distinctUntilChanged()
     }
-
-    private class LoadedPinned(val keys: Set<AppKey>, val apps: Map<AppKey, LaunchableApp>?) {
-        /** These apps in [order] (the one place loaded apps are put in a pinned order); null if failed. */
-        fun ordered(order: List<AppKey>): List<LaunchableApp>? = apps?.let { byKey -> order.mapNotNull(byKey::get) }
-    }
-
-    /** What a pinned-apps load depends on (the display config and retries only trigger one). */
-    private data class LoadInputs(val set: Set<AppKey>, val change: Int, val settledChange: Int)
 
     private fun openDrawer() {
         if (host.isDrawerOpen) {
@@ -290,11 +273,12 @@ class EdgeService : LifecycleService() {
         // A failed load is retried whenever someone opens the drawer (e.g. LauncherApps wasn't
         // ready right after boot); meanwhile the drawer shows the spinner, not that failure.
         val current = pinned.value
-        if (current != null && (current.apps == null || current.failed)) {
+        // (Not while a load is already running: that would only restart it.)
+        if (current != null && (current.apps == null || current.failed) && !current.reloading) {
             pinnedRetry.value++
         }
         // A failure with nothing to show is hidden while that retry runs (spinner, not "unavailable").
-        val failedLoad = current?.takeIf { it.apps == null }?.load
+        val failedLoad = current?.takeIf { it.apps == null }?.kept?.load
         // Recents depend on what was just used, so they're read on every open and fill in when
         // ready; until then the drawer keeps their space if it expects any.
         val expectRecents = recents.hasAccess()
@@ -302,7 +286,7 @@ class EdgeService : LifecycleService() {
         // What the drawer shows about the pinned apps (the grid, "no apps" vs "unavailable") comes
         // from this one value, shown at once (null until loaded; usually it already is), except a
         // failure with nothing to show while it's retried. Recents follow the settings instead.
-        fun visible(p: Pinned?) = p?.takeIf { it.load !== failedLoad }
+        fun visible(p: Pinned?) = p?.takeIf { it.kept.load !== failedLoad }
         val shownPinned = mutableStateOf(visible(pinned.value))
         // This drawer's work: cancelled when this drawer goes (or fails to show), never by
         // another drawer's callbacks, e.g. one still closing when this one opens.
@@ -317,14 +301,8 @@ class EdgeService : LifecycleService() {
             // over a list kept from before the pinned set changed: its apps in that order, others after).
             apps = derivedStateOf {
                 shownPinned.value?.let { p ->
-                    val pending = pendingOrder
-                    if (pending == null) {
-                        p.apps.orEmpty()
-                    } else {
-                        val shownKeys = p.keys.toSet()
-                        val inPending = pending.toSet()
-                        p.inOrder(pending.filter { it in shownKeys } + p.keys.filter { it !in inPending }).apps.orEmpty()
-                    }
+                    val apps = p.apps.orEmpty()
+                    pendingOrder?.let { pending -> apps.arrangedBy(pending) { it.key } } ?: apps
                 }
             },
             reloading = derivedStateOf { shownPinned.value?.reloading == true },
@@ -374,17 +352,21 @@ class EdgeService : LifecycleService() {
      * replaced it meanwhile.
      */
     private suspend fun savePendingOrder(order: List<AppKey>, shownOrder: List<AppKey>) = saveOrderLock.withLock {
-        // One at a time: a save mustn't mistake an earlier one's write arriving for "another write".
-        val before = latestSettings?.apps
+        // One at a time, so each waits for its own write.
         var written: List<AppKey>? = null
         val ok = repo.update { s -> s.copy(apps = s.apps.withVisibleOrder(shownOrder)).also { written = it.apps } }
+        // Settings updates seen so far: any later one reflects this write (or something after it).
+        val seen = settingsUpdates.value
         val final = written
         if (ok && final != null) {
             if (pendingOrder == order) {
                 pendingOrder = final
             }
-            // At once if the write changed nothing; otherwise when it (or a later write) arrives.
-            withTimeoutOrNull(PENDING_ORDER_SAFETY_MS) { settings.first { it?.apps == final || it?.apps != before } }
+            // At once if the settings already show it (e.g. the write changed nothing); otherwise
+            // at the first settings update after the write, whatever it shows.
+            if (latestSettings?.apps != final) {
+                withTimeoutOrNull(PENDING_ORDER_SAFETY_MS) { settingsUpdates.first { it > seen } }
+            }
             if (pendingOrder == final) {
                 pendingOrder = null
             }
@@ -493,6 +475,7 @@ class EdgeService : LifecycleService() {
         /** Only so a stuck settings read can't keep it forever; normally cleared long before. */
         private const val PENDING_ORDER_SAFETY_MS = 30_000L
         private const val LOAD_ATTEMPTS = 4
+        private const val APPS_CHANGED_SETTLE_MS = 500L
         private const val EXTRA_CLOSE_REASON = "reason"
 
         private const val EXTRA_FOREGROUND_REQUIRED = "foreground_required"

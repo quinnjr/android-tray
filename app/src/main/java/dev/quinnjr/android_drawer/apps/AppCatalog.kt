@@ -32,9 +32,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 
@@ -271,24 +269,9 @@ typealias AppSource = (key: AppKey, make: () -> LaunchableApp) -> LaunchableApp
 /** Makes every app afresh; no cache. */
 val MakeEach: AppSource = { _, make -> make() }
 
-/**
- * Events with a burst collapsed into one once it settles. With [holdFirst] false the first value
- * (e.g. a StateFlow's current one) passes at once; only later ones are held back.
- */
+/** Events with a burst collapsed into one once it settles. */
 @OptIn(FlowPreview::class)
-fun <T> Flow<T>.settled(holdFirst: Boolean = true): Flow<T> = flow {
-    var first = !holdFirst
-    emitAll(
-        debounce {
-            if (first) {
-                first = false
-                0L
-            } else {
-                APPS_CHANGED_DEBOUNCE_MS
-            }
-        },
-    )
-}
+fun <T> Flow<T>.settled(): Flow<T> = debounce(APPS_CHANGED_DEBOUNCE_MS)
 
 /** These app changes as reloads: a burst of [relevant] ones gives one, and there's one to start. */
 fun Flow<String?>.reloads(relevant: (pkg: String?) -> Boolean = { true }): Flow<Unit> =
