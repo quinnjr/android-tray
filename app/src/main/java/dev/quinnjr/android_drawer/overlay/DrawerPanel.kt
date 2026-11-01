@@ -52,11 +52,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -250,13 +253,15 @@ private fun Panel(
                 }
                 Box(Modifier.weight(1f)) {
                     val pinned = apps.value
+                    // A drag keeps the grid (with its frozen order) even if a reload empties it.
+                    val dragActive = remember { mutableStateOf(false) }
                     when {
-                        pinned == null -> CircularProgressIndicator(
+                        pinned == null && !dragActive.value -> CircularProgressIndicator(
                             color = LABEL_COLOR,
                             modifier = Modifier.align(Alignment.Center).size(32.dp),
                         )
-                        pinned.isEmpty() -> NoApps(hasPinned.value, onOpenSettings, Modifier.fillMaxSize())
-                        else -> PinnedGrid(pinned, iconsLocked, onLaunch, onReorder)
+                        pinned.isNullOrEmpty() && !dragActive.value -> NoApps(hasPinned.value, onOpenSettings, Modifier.fillMaxSize())
+                        else -> PinnedGrid(pinned.orEmpty(), dragActive, iconsLocked, onLaunch, onReorder)
                     }
                 }
                 IconButton(
@@ -307,6 +312,8 @@ private fun RecentSection(recent: List<LaunchableApp>?, rows: Int, onLaunch: (La
 @Composable
 private fun PinnedGrid(
     latest: List<LaunchableApp>,
+    /** Set while an app is being dragged, so the panel keeps the grid even if a reload empties it. */
+    dragActive: MutableState<Boolean>,
     iconsLocked: Boolean,
     onLaunch: (LaunchableApp, Rect?) -> Unit,
     onReorder: (List<AppKey>) -> Unit,
@@ -315,17 +322,26 @@ private fun PinnedGrid(
     val haptics = LocalHapticFeedback.current
     val edgePx = with(LocalDensity.current) { AUTOSCROLL_EDGE.toPx() }
     var dragging by remember { mutableStateOf<AppKey?>(null) }
-    // The apps shown: [latest], except that a reload arriving mid-drag waits for the finger to lift
-    // (restarting the gesture would drop the icon and save an order never released on).
-    var apps by remember { mutableStateOf(latest) }
-    LaunchedEffect(latest, dragging) {
-        if (dragging == null) {
-            apps = latest
-        }
+    // While a drag is in progress, the order being dragged: a reload meanwhile waits for the
+    // finger to lift (it mustn't move icons under it or end the gesture).
+    var dragOrder by remember { mutableStateOf<List<LaunchableApp>?>(null) }
+    // The order shown when the drag started, to tell whether it changed.
+    var dragStart by remember { mutableStateOf<List<AppKey>>(emptyList()) }
+    // The order last released on, shown until it comes back saved (so the icon doesn't jump back
+    // meanwhile), unless the apps themselves change.
+    var released by remember { mutableStateOf<List<LaunchableApp>?>(null) }
+    val latestKeys = latest.map { it.key }
+    val stillSaving = released?.takeIf { r ->
+        val keys = r.map { it.key }
+        keys != latestKeys && keys.toSet() == latestKeys.toSet()
     }
-    var order by remember(apps) { mutableStateOf(apps) }
-    // The order last handed to onReorder, so a later drag that restores it is saved too.
-    var saved by remember(apps) { mutableStateOf(apps) }
+    if (released != null && stillSaving == null) {
+        // Saved (or the apps changed): forget it, so a later order is never overridden by it.
+        SideEffect { released = null }
+    }
+    val order = dragOrder ?: stillSaving ?: latest
+    // The gesture below outlives recompositions (it isn't restarted by reloads), so it reads this.
+    val currentOrder by rememberUpdatedState(order)
     // Finger position in grid coordinates, and where on the icon it grabbed.
     var pointer by remember { mutableStateOf(Offset.Zero) }
     var grab by remember { mutableStateOf(Offset.Zero) }
@@ -340,19 +356,25 @@ private fun PinnedGrid(
     /** Moves the lifted app into the slot under the finger. */
     fun followPointer() {
         val key = dragging ?: return
-        val from = order.indexOfFirst { it.key == key }
+        val current = dragOrder ?: return
+        val from = current.indexOfFirst { it.key == key }
         // Wait for the grid to lay out the previous move before moving again.
         val laidOut = gridState.layoutInfo.visibleItemsInfo.any { it.index == from && it.key == key.encode() }
         val target = appAt(pointer) ?: return
-        if (laidOut && target.index != from) { order = order.moved(from, target.index) }
+        if (laidOut && target.index != from) {
+            dragOrder = current.moved(from, target.index)
+        }
     }
 
     fun finishDrag() {
-        if (dragging != null && order != saved) {
-            onReorder(order.map { it.key })
-            saved = order
+        val dragged = dragOrder
+        if (dragging != null && dragged != null && dragged.map { it.key } != dragStart) {
+            onReorder(dragged.map { it.key })
+            released = dragged
         }
+        dragOrder = null
         dragging = null
+        dragActive.value = false
     }
 
     // While an app is lifted, keep scrolling each frame the finger rests near the top or bottom.
@@ -373,12 +395,18 @@ private fun PinnedGrid(
     val reorder = if (iconsLocked) {
         Modifier
     } else {
-        // Keyed on apps, like order/saved above, so the gesture never works on stale state.
-        Modifier.pointerInput(apps) {
+        // Not keyed on the apps: a reload must not restart it and drop a press already under way.
+        Modifier.pointerInput(Unit) {
             detectDragGesturesAfterLongPress(
                 onDragStart = { start ->
                     val info = appAt(start) ?: return@detectDragGesturesAfterLongPress
-                    dragging = order[info.index].key
+                    val shown = currentOrder
+                    val app = shown.getOrNull(info.index) ?: return@detectDragGesturesAfterLongPress
+                    dragOrder = shown
+                    released = null
+                    dragStart = shown.map { it.key }
+                    dragging = app.key
+                    dragActive.value = true
                     pointer = start
                     hasMoved = false
                     grab = start - info.offset.toOffset()

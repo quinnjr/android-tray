@@ -23,12 +23,12 @@ import android.view.Display
 import android.view.WindowManager
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import dev.quinnjr.android_drawer.R
 import dev.quinnjr.android_drawer.TAG
-import dev.quinnjr.android_drawer.apps.APPS_CHANGED_DEBOUNCE_MS
 import dev.quinnjr.android_drawer.apps.AppCatalog
 import dev.quinnjr.android_drawer.apps.DrawConfig
 import dev.quinnjr.android_drawer.apps.DrawnAppCache
@@ -37,6 +37,7 @@ import dev.quinnjr.android_drawer.apps.RecentApps
 import dev.quinnjr.android_drawer.apps.appsChanged
 import dev.quinnjr.android_drawer.apps.orOnFailure
 import dev.quinnjr.android_drawer.apps.resolveDrawn
+import dev.quinnjr.android_drawer.apps.settled
 import dev.quinnjr.android_drawer.overlay.DRAWER_ICON_SIZE
 import dev.quinnjr.android_drawer.overlay.OverlayHost
 import dev.quinnjr.android_drawer.settings.AppKey
@@ -55,8 +56,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
@@ -85,7 +89,11 @@ class EdgeService : LifecycleService() {
     /** Pinned [apps] loaded for [keys]; [apps] null if loading failed. */
     private class Pinned(val keys: List<AppKey>, val apps: List<LaunchableApp>?)
     /** The settings the handle is showing; null until first read. */
-    @Volatile private var latestSettings: DrawerSettings? = null
+    private lateinit var settings: StateFlow<DrawerSettings?>
+    /** The settings as last read (the handle isn't shown before they are). */
+    private val latestSettings: DrawerSettings? get() = settings.value
+    /** Bumped to reload the pinned apps after a failed load (e.g. when a drawer opens). */
+    private val pinnedRetry = MutableStateFlow(0)
     /** What app labels and icons depend on; the caches are re-warmed when it changes. */
     private val displayConfig = MutableStateFlow<DrawConfig?>(null)
     /** Recent apps with icons already drawn, so reopening the drawer doesn't redraw them. */
@@ -144,9 +152,11 @@ class EdgeService : LifecycleService() {
         @Suppress("DEPRECATION") // Still delivered for Home/Recents; only sending it is restricted.
         val closeActions = IntentFilter(Intent.ACTION_SCREEN_OFF).apply { addAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS) }
         ContextCompat.registerReceiver(this, closeDrawerReceiver, closeActions, ContextCompat.RECEIVER_NOT_EXPORTED)
+        // One reading of the settings for everything here (handle, pinned apps, drawer), so they
+        // can never disagree about which apps are pinned.
+        settings = repo.settings.stateIn(lifecycleScope, SharingStarted.Eagerly, null)
         lifecycleScope.launch {
-            repo.settings.collect { s ->
-                latestSettings = s
+            settings.filterNotNull().collect { s ->
                 if (!s.enabled || !Settings.canDrawOverlays(this@EdgeService)) {
                     stop()
                 } else {
@@ -184,25 +194,26 @@ class EdgeService : LifecycleService() {
      * current), then the reloaded list. After a change to the apps themselves it waits for a
      * burst (e.g. many updates) to settle before reloading.
      */
-    private fun pinnedApps(): Flow<Pinned?> {
-        // Not Flow.settled(): every change must cancel a load in flight at once (its result could be
-        // stale), and only the reload waits for the burst to settle. Collected once (stateIn).
-        var settledChange = pinnedAppsChanged.value
-        return combine(
-            repo.settings.map { it.apps }.distinctUntilChanged(),
-            pinnedAppsChanged,
-            displayConfig.filterNotNull(),
-        ) { keys, change, _ -> keys to change }
-            .transformLatest { (keys, change) ->
-                emit(null)
-                if (change != settledChange) {
-                    delay(APPS_CHANGED_DEBOUNCE_MS)
-                    settledChange = change
-                }
+    private fun pinnedApps(): Flow<Pinned?> = combine(
+        settings.filterNotNull().map { it.apps }.distinctUntilChanged(),
+        // Every change empties it at once (a load in flight could be stale); it reloads only once
+        // the settled copy catches up, i.e. after a burst of changes has settled.
+        pinnedAppsChanged,
+        pinnedAppsChanged.drop(1).settled().onStart { emit(pinnedAppsChanged.value) },
+        displayConfig.filterNotNull(),
+        pinnedRetry,
+    ) { values ->
+        @Suppress("UNCHECKED_CAST")
+        val keys = values[0] as List<AppKey>
+        Triple(keys, values[1] as Int, values[2] as Int)
+    }
+        .transformLatest { (keys, change, settledChange) ->
+            emit(null)
+            if (change == settledChange) {
                 // Sized to the pinned apps (no LRU limit to thrash), minus any unpinned since.
                 pinnedIcons.retain(keys.toSet())
                 val loaded = withContext(Dispatchers.Default) {
-                    // One retry here, for every drawer, rather than in each drawer that opens.
+                    // One quick retry here for every drawer; later ones when a drawer opens.
                     catalog.resolveDrawn(pinnedIcons, keys) ?: run {
                         delay(LOAD_RETRY_MS)
                         catalog.resolveDrawn(pinnedIcons, keys)
@@ -210,7 +221,7 @@ class EdgeService : LifecycleService() {
                 }
                 emit(Pinned(keys, loaded?.apps))
             }
-    }
+        }
 
     private fun openDrawer() {
         if (host.isDrawerOpen) {
@@ -218,6 +229,12 @@ class EdgeService : LifecycleService() {
         }
         // The handle isn't shown before the settings are read.
         val settingsKeys = latestSettings?.apps ?: return
+        // A failed load is retried whenever someone opens the drawer (e.g. LauncherApps wasn't
+        // ready right after boot).
+        val current = pinned.value
+        if (current != null && current.apps == null) {
+            pinnedRetry.value++
+        }
         // Recents depend on what was just used, so they're read on every open and fill in when
         // ready; until then the drawer keeps their space if it expects any.
         val expectRecents = recents.hasAccess()
@@ -225,14 +242,16 @@ class EdgeService : LifecycleService() {
         // Everything the drawer shows about the pinned apps (the grid, "no apps" vs "unavailable",
         // what recents leave out) comes from this one value, so it's always consistent. Shown at
         // once; null until loaded (usually it already is).
-        val shownPinned = mutableStateOf(pinned.value)
+        // Only a value loaded for the current settings: the pinned apps derive from the same
+        // settings state, so they can lag behind it (briefly) but never be ahead of it.
+        fun isCurrent(p: Pinned?) = p != null && p.keys == latestSettings?.apps
+        val shownPinned = mutableStateOf(pinned.value?.takeIf(::isCurrent))
         fun pinnedKeys() = shownPinned.value?.keys ?: settingsKeys
         // This drawer's work: cancelled when this drawer goes (or fails to show), never by
         // another drawer's callbacks, e.g. one still closing when this one opens.
         val drawerJob = lifecycleScope.launch {
-            // Follows the pinned apps for as long as it's open (settings, app and display changes);
-            // the newest value supersedes anything older.
-            pinned.filterNotNull().collectLatest { shownPinned.value = it }
+            // Follows the pinned apps for as long as it's open (settings, app and display changes).
+            pinned.filter(::isCurrent).collect { shownPinned.value = it }
         }
         var recentLoad: Job? = null
         val shown = host.openDrawer(
@@ -250,9 +269,14 @@ class EdgeService : LifecycleService() {
             onClosed = { drawerJob.cancel() },
             // Only once the drawer has laid out room for them (none in a short landscape drawer).
             onRecentsNeeded = {
-                if (expectRecents && recent.value == null && recentLoad?.isActive != true) {
-                    // A child of this drawer's job, so it's cancelled with it.
-                    recentLoad = lifecycleScope.launch(drawerJob) { recent.value = recentApps(pinnedKeys()) }
+                if (expectRecents && recentLoad?.isActive != true) {
+                    // A child of this drawer's job, so it's cancelled with it. Recomputed whenever
+                    // the pinned apps change, so recents never repeat or drop one of them.
+                    recentLoad = lifecycleScope.launch(drawerJob) {
+                        snapshotFlow { pinnedKeys() }.distinctUntilChanged().collectLatest { keys ->
+                            recent.value = recentApps(keys)
+                        }
+                    }
                 }
             },
         )
