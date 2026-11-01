@@ -74,10 +74,13 @@ internal fun decodeApps(s: String): List<AppKey> = s.lineSequence().mapNotNull(A
 
 /**
  * These items arranged by [order] (matched by [key]): keys in [order] without an item are skipped,
- * and items whose key isn't in [order] come after, in their own order.
+ * and items whose key isn't in [order] come after, in their own order (cf. [valuesIn], which drops them).
  */
 internal fun <T, K> List<T>.arrangedBy(order: List<K>, key: (T) -> K): List<T> {
     val byKey = associateBy(key)
     val inOrder = order.toSet()
     return order.mapNotNull(byKey::get) + filter { key(it) !in inOrder }
 }
+
+/** The values for the keys in [order], in that order; keys without a value are skipped (others dropped). */
+internal fun <K, V> Map<K, V>.valuesIn(order: List<K>): List<V> = order.mapNotNull(::get)

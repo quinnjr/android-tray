@@ -40,7 +40,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
-    private val repo = SettingsRepository(app)
+    private val repo = SettingsRepository.get(app)
     private val catalog = AppCatalog(app)
     /** Apps with icons drawn, kept across reloads of the list. */
     private val icons = DrawnAppCache()

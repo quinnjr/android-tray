@@ -113,7 +113,7 @@ private val LABEL_COLOR = Color.White
 fun DrawerPanel(
     /** The pinned apps; null while they're still loading. */
     apps: State<List<LaunchableApp>?>,
-    /** The apps shown are being reloaded (an app or the display changed). */
+    /** How current the apps shown are: a reload under way, or a failed one, shows as a hint. */
     status: State<PinnedStatus>,
     /** Recently used apps; null while they're still being read (their space is kept meanwhile). */
     recent: State<List<LaunchableApp>?>,
@@ -189,7 +189,7 @@ fun DrawerPanel(
 @Composable
 private fun Panel(
     apps: State<List<LaunchableApp>?>,
-    /** The apps shown are being reloaded (an app or the display changed). */
+    /** How current the apps shown are: a reload under way, or a failed one, shows as a hint. */
     status: State<PinnedStatus>,
     recent: State<List<LaunchableApp>?>,
     /** Whether to show the recents section at all (usage access granted). */

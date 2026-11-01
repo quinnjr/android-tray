@@ -119,7 +119,7 @@ class AppCatalog(context: Context) {
         }
         val apps = shown.mapNotNull { key -> known[key] ?: found[key]?.let { info -> obtainOrSkip(obtain, key) { info.toApp(key) } } }
         val unavailable = keys.filterTo(HashSet()) { it.userSerial !in available || (it !in known && it !in found && it !in unknown) }
-        return Resolved(apps, unavailable)
+        return Resolved(apps, unavailable, unknown)
     }
 
     /** Profiles whose apps can be shown now (unlocked, not paused), by serial number. */
@@ -254,8 +254,11 @@ internal const val APPS_CHANGED_SETTLE_MS = 500L
 /** What happened when an app was started. */
 enum class LaunchResult { STARTED, GONE, NOT_ALLOWED }
 
-/** Resolved pinned apps, and the keys that are definitely unavailable (not merely failed to load). */
-data class Resolved(val apps: List<LaunchableApp>, val unavailable: Set<AppKey>)
+/**
+ * Resolved pinned apps, the keys that are definitely [unavailable], and those that couldn't be
+ * listed ([unknown]: a failure, not the same as unavailable).
+ */
+data class Resolved(val apps: List<LaunchableApp>, val unavailable: Set<AppKey>, val unknown: Set<AppKey> = emptySet())
 
 /**
  * The pinned apps for [keys] through [cache] (drawn ones reused, others drawn and kept); null if

@@ -24,7 +24,7 @@ class BootReceiver : BroadcastReceiver() {
                 // Settings that can't be read soon (they're retried, not guessed) leave the handle
                 // off until the app is opened, rather than overrun the broadcast's time limit.
                 val enabled = withTimeoutOrNull(SETTINGS_READ_TIMEOUT_MS) {
-                    SettingsRepository(context).settings.first().enabled
+                    SettingsRepository.get(context).settings.first().enabled
                 } ?: return@launch
                 EdgeService.sync(context, enabled)
             } catch (e: Exception) {

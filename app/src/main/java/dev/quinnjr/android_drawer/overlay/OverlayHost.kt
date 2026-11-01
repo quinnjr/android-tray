@@ -178,7 +178,13 @@ class OverlayHost(
         }
         drawerParams = params
         add(root, params)
-        return root in added
+        if (root !in added) {
+            // The window couldn't be added: undo the rest, so the handle comes back and the drawer
+            // can be opened again.
+            removeDrawer()
+            return false
+        }
+        return true
     }
 
     /** Starts the exit animation; the window is removed when it finishes. */
