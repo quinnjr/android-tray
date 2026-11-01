@@ -246,7 +246,7 @@ class AppCatalog(context: Context) {
 }
 
 /** How long app changes must settle before a burst of them (e.g. many updates) is acted on once. */
-private const val APPS_CHANGED_DEBOUNCE_MS = 500L
+internal const val APPS_CHANGED_DEBOUNCE_MS = 500L
 
 /** Resolved pinned apps, and the keys that are definitely unavailable (not merely failed to load). */
 data class Resolved(val apps: List<LaunchableApp>, val unavailable: Set<AppKey>)

@@ -52,6 +52,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -259,7 +260,7 @@ private fun Panel(
                             modifier = Modifier.align(Alignment.Center).size(32.dp),
                         )
                         pinned.isNullOrEmpty() && !drag.active -> NoApps(hasPinned.value, onOpenSettings, Modifier.fillMaxSize())
-                        else -> PinnedGrid(pinned.orEmpty(), drag, iconsLocked, onLaunch, onReorder)
+                        else -> PinnedGrid(pinned, drag, iconsLocked, onLaunch, onReorder)
                     }
                 }
                 IconButton(
@@ -309,7 +310,8 @@ private fun RecentSection(recent: List<LaunchableApp>?, rows: Int, onLaunch: (La
  */
 @Composable
 private fun PinnedGrid(
-    latest: List<LaunchableApp>,
+    /** The pinned apps; null while they're reloading (only during a drag, which keeps the grid). */
+    latest: List<LaunchableApp>?,
     /** The drag in progress, owned by the panel so it keeps the grid even if a reload empties it. */
     drag: GridDrag,
     iconsLocked: Boolean,
@@ -319,11 +321,17 @@ private fun PinnedGrid(
     val gridState = rememberLazyGridState()
     val haptics = LocalHapticFeedback.current
     val edgePx = with(LocalDensity.current) { AUTOSCROLL_EDGE.toPx() }
+    // While a drag is in progress its order is shown: a reload meanwhile mustn't move icons under
+    // the finger. Apps it removes (e.g. uninstalled) still go at once, and if that's the one being
+    // dragged, the drag ends. The released order then shows at once: the service applies it while
+    // it saves.
+    val latestKeys = latest?.mapTo(HashSet()) { it.key }
+    val stillThere = drag.order?.filter { latestKeys == null || it.key in latestKeys }
+    if (drag.key != null && stillThere != null && stillThere.none { it.key == drag.key }) {
+        SideEffect { drag.clear() }
+    }
     val dragging = drag.key
-    // While a drag is in progress its order is shown: a reload meanwhile waits for the finger to
-    // lift (it mustn't move icons under it). The released order then shows at once, as the drawer
-    // applies it before the save completes.
-    val order = drag.order ?: latest
+    val order = stillThere ?: latest.orEmpty()
     // The gesture below outlives recompositions (it isn't restarted by reloads), so it reads this.
     val currentOrder by rememberUpdatedState(order)
     // Finger position in grid coordinates, and where on the icon it grabbed.
@@ -350,7 +358,10 @@ private fun PinnedGrid(
         }
     }
 
-    /** Released: saves the new order if it changed. */
+    /**
+     * Released: saves the new order if it changed. A cancelled drag (the drawer closed under the
+     * finger: Home, screen off) is an abort, as elsewhere on Android, so it saves nothing.
+     */
     fun finishDrag() {
         val dragged = drag.order
         if (drag.key != null && dragged != null && dragged.map { it.key } != drag.start) {
