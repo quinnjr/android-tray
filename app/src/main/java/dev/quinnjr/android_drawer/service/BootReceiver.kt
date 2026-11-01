@@ -3,7 +3,6 @@ package dev.quinnjr.android_drawer.service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.provider.Settings
 import android.util.Log
 import dev.quinnjr.android_drawer.TAG
 import dev.quinnjr.android_drawer.settings.SettingsRepository
@@ -27,7 +26,7 @@ class BootReceiver : BroadcastReceiver() {
                 val enabled = withTimeoutOrNull(SETTINGS_READ_TIMEOUT_MS) {
                     SettingsRepository(context).settings.first().enabled
                 } ?: return@launch
-                if (enabled && Settings.canDrawOverlays(context)) { EdgeService.start(context) }
+                EdgeService.sync(context, enabled)
             } catch (e: Exception) {
                 // Not worth crashing the app at boot; the handle comes back when the app is opened.
                 Log.e(TAG, "Could not start the edge handle", e)

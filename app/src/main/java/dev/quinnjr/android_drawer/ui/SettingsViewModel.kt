@@ -2,7 +2,6 @@ package dev.quinnjr.android_drawer.ui
 
 import android.app.Application
 import android.content.res.Configuration
-import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.quinnjr.android_drawer.apps.AppCatalog
@@ -103,8 +102,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     /** Starts or stops the overlay to match settings and permission (call on resume). */
     fun syncService() = viewModelScope.launch {
         val app = getApplication<Application>()
-        val enabled = repo.settings.first().enabled
-        if (enabled && Settings.canDrawOverlays(app)) { EdgeService.start(app) } else { EdgeService.stop(app) }
+        EdgeService.sync(app, repo.settings.first().enabled)
     }
 
     fun toggleApp(key: AppKey) = update { it.copy(apps = it.apps.toggled(key)) }

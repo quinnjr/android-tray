@@ -49,6 +49,8 @@ class OverlayHost(
     private var drawerState: MutableTransitionState<Boolean>? = null
     private var drawerClosed: (() -> Unit)? = null
     private var drawerParams: WindowManager.LayoutParams? = null
+    /** Where the finger grabbed the handle, relative to its top-left corner. */
+    private var grabOffset = 0f to 0f
     /** Screen size and system-bar insets for the drag in progress. */
     private var dragBounds: Pair<Size, Rect>? = null
     private var fullscreen = false
@@ -65,6 +67,7 @@ class OverlayHost(
         val view = handle ?: HandleView(
             context,
             onOpen = onOpen,
+            onPickUp = ::pickUpHandle,
             onDragMove = ::dragHandleTo,
             onDrop = ::dropHandle,
         ).also {
@@ -216,13 +219,22 @@ class OverlayHost(
 
     /** The system bars' size on each edge (status bar, navigation bar), which the handle keeps clear of. */
     private fun barInsets(): Rect = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        val i = wm.currentWindowMetrics.windowInsets.getInsets(WindowInsets.Type.systemBars())
+        // Display cutouts too: the handle may be laid out under a notch or punch-hole otherwise.
+        val i = wm.currentWindowMetrics.windowInsets
+            .getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
         Rect(i.left, i.top, i.right, i.bottom)
     } else {
-        // Before Android 11, the system bars' size comes from an attached overlay's insets.
-        @Suppress("DEPRECATION")
-        (handle?.rootWindowInsets)?.let { Rect(it.stableInsetLeft, it.stableInsetTop, it.stableInsetRight, it.stableInsetBottom) }
-            ?: Rect()
+        // Before Android 11, the system bars' and cutout's size come from an attached overlay's insets.
+        handle?.rootWindowInsets?.let { insets ->
+            val cutout = insets.displayCutout
+            @Suppress("DEPRECATION")
+            Rect(
+                maxOf(insets.stableInsetLeft, cutout?.safeInsetLeft ?: 0),
+                maxOf(insets.stableInsetTop, cutout?.safeInsetTop ?: 0),
+                maxOf(insets.stableInsetRight, cutout?.safeInsetRight ?: 0),
+                maxOf(insets.stableInsetBottom, cutout?.safeInsetBottom ?: 0),
+            )
+        } ?: Rect()
     }
 
     /** Removes the drawer at once, without the exit animation (e.g. when the screen turns off). */
@@ -275,12 +287,18 @@ class OverlayHost(
         handleParams.y = handleTop(s.yFraction, screen.height, handleHeightPx, bars.top, bars.bottom)
     }
 
+    /** Remembers where on the handle the finger is, so it moves with the finger without jumping. */
+    private fun pickUpHandle(rawX: Float, rawY: Float) {
+        grabOffset = (rawX - handleParams.x) to (rawY - handleParams.y)
+    }
+
     private fun dragHandleTo(rawX: Float, rawY: Float) {
         val view = handle ?: return
         // Measured once per drag: this runs for every touch move.
         val (screen, bars) = dragBounds ?: (screenSize() to barInsets()).also { dragBounds = it }
-        handleParams.x = handleDragX(rawX, screen.width, handleWidthPx, bars.left, bars.right)
-        handleParams.y = handleTopAt(rawY, screen.height, handleHeightPx, bars.top, bars.bottom)
+        val (grabX, grabY) = grabOffset
+        handleParams.x = clampHandleLeft((rawX - grabX).toInt(), screen.width, handleWidthPx, bars.left, bars.right)
+        handleParams.y = clampHandleTop((rawY - grabY).toInt(), screen.height, handleHeightPx, bars.top, bars.bottom)
         update(view, handleParams)
     }
 
@@ -289,7 +307,8 @@ class OverlayHost(
         val s = settings ?: return
         val screen = screenSize()
         val bars = barInsets()
-        val top = handleTopAt(rawY, screen.height, handleHeightPx, bars.top, bars.bottom)
+        // Where the finger holds it, as while dragging: released without moving, it stays put.
+        val top = clampHandleTop((rawY - grabOffset.second).toInt(), screen.height, handleHeightPx, bars.top, bars.bottom)
         val fraction = yFractionFor(top, screen.height, handleHeightPx, bars.top, bars.bottom)
         // Snap immediately; the settings flow will confirm with the persisted values.
         showHandle(s.copy(side = side, yFraction = fraction))

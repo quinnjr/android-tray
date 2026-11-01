@@ -268,9 +268,6 @@ fun appChanges(
 fun Flow<String?>.reloads(relevant: (pkg: String?) -> Boolean = { true }): Flow<Unit> =
     filter(relevant).settled().map { }.onStart { emit(Unit) }
 
-/** Whether this key belongs to [pkg]. */
-fun AppKey.isIn(pkg: String): Boolean = this.pkg == pkg
-
 /**
  * Emits whenever an app is installed, removed or changed in any profile (its package name), or
  * several apps or a whole profile (work apps, Private Space) change at once (null).
@@ -298,6 +295,15 @@ fun appsChanged(context: Context): Flow<String?> = callbackFlow {
         override fun onPackageChanged(packageName: String?, user: UserHandle?) { trySend(packageName) }
         override fun onPackagesAvailable(packageNames: Array<out String>?, user: UserHandle?, replacing: Boolean) { trySend(null) }
         override fun onPackagesUnavailable(packageNames: Array<out String>?, user: UserHandle?, replacing: Boolean) { trySend(null) }
+
+        // Suspended apps (Digital Wellbeing, Focus mode, an admin) get a greyed-out icon.
+        override fun onPackagesSuspended(packageNames: Array<out String>?, user: UserHandle?) {
+            packageNames.orEmpty().forEach { trySend(it) }
+        }
+
+        override fun onPackagesUnsuspended(packageNames: Array<out String>?, user: UserHandle?) {
+            packageNames.orEmpty().forEach { trySend(it) }
+        }
     }
     launcherApps.registerCallback(callback, Handler(Looper.getMainLooper()))
     awaitClose {

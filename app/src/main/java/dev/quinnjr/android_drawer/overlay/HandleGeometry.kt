@@ -35,11 +35,10 @@ fun handleX(side: Side, screenWidth: Int, handleWidth: Int, insetLeft: Int, inse
         screenWidth - insetRight - handleWidth
     }
 
-/** Top edge for a handle centred on [rawY] (while dragged or dropped), clear of the system bars. */
-fun handleTopAt(rawY: Float, screenHeight: Int, handleHeight: Int, insetTop: Int = 0, insetBottom: Int = 0): Int =
-    (rawY - handleHeight / 2f).toInt()
-        .coerceIn(insetTop, insetTop + verticalRange(screenHeight, handleHeight, insetTop, insetBottom))
+/** A dragged or dropped handle's [top] edge, kept clear of the system bars. */
+fun clampHandleTop(top: Int, screenHeight: Int, handleHeight: Int, insetTop: Int = 0, insetBottom: Int = 0): Int =
+    top.coerceIn(insetTop, insetTop + verticalRange(screenHeight, handleHeight, insetTop, insetBottom))
 
-/** Left edge for a handle centred on [rawX] while dragged, kept clear of side navigation bars. */
-fun handleDragX(rawX: Float, screenWidth: Int, handleWidth: Int, insetLeft: Int, insetRight: Int): Int =
-    (rawX - handleWidth / 2f).toInt().coerceIn(insetLeft, (screenWidth - insetRight - handleWidth).coerceAtLeast(insetLeft))
+/** A dragged handle's [left] edge, kept clear of side navigation bars and cutouts. */
+fun clampHandleLeft(left: Int, screenWidth: Int, handleWidth: Int, insetLeft: Int, insetRight: Int): Int =
+    left.coerceIn(insetLeft, (screenWidth - insetRight - handleWidth).coerceAtLeast(insetLeft))

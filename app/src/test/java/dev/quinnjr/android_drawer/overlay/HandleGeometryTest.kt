@@ -42,16 +42,16 @@ class HandleGeometryTest {
 
     @Test
     fun `dragged handle stays on screen and clear of side navigation bars`() {
-        assertEquals(500 - 30, handleDragX(500f, 2400, 60, insetLeft = 126, insetRight = 0))
-        assertEquals(126, handleDragX(10f, 2400, 60, insetLeft = 126, insetRight = 0))
-        assertEquals(2400 - 126 - 60, handleDragX(2399f, 2400, 60, insetLeft = 0, insetRight = 126))
+        assertEquals(470, clampHandleLeft(470, 2400, 60, insetLeft = 126, insetRight = 0))
+        assertEquals(126, clampHandleLeft(-20, 2400, 60, insetLeft = 126, insetRight = 0))
+        assertEquals(2400 - 126 - 60, clampHandleLeft(2369, 2400, 60, insetLeft = 0, insetRight = 126))
     }
 
     @Test
-    fun `dragged handle top is centred on the finger and clamped`() {
-        assertEquals(400, handleTopAt(500f, 2000, 200))
-        assertEquals(0, handleTopAt(10f, 2000, 200))
-        assertEquals(1800, handleTopAt(1990f, 2000, 200))
+    fun `dragged handle top is kept on screen`() {
+        assertEquals(400, clampHandleTop(400, 2000, 200))
+        assertEquals(0, clampHandleTop(-90, 2000, 200))
+        assertEquals(1800, clampHandleTop(1890, 2000, 200))
     }
 
     @Test
@@ -59,8 +59,8 @@ class HandleGeometryTest {
         // 2000px screen, 100px status bar, 150px navigation bar, 200px handle.
         assertEquals(100, handleTop(0f, 2000, 200, insetTop = 100, insetBottom = 150))
         assertEquals(2000 - 150 - 200, handleTop(1f, 2000, 200, insetTop = 100, insetBottom = 150))
-        assertEquals(100, handleTopAt(10f, 2000, 200, insetTop = 100, insetBottom = 150))
-        assertEquals(2000 - 150 - 200, handleTopAt(1990f, 2000, 200, insetTop = 100, insetBottom = 150))
+        assertEquals(100, clampHandleTop(-90, 2000, 200, insetTop = 100, insetBottom = 150))
+        assertEquals(2000 - 150 - 200, clampHandleTop(1890, 2000, 200, insetTop = 100, insetBottom = 150))
     }
 
     @Test

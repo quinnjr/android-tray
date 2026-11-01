@@ -68,10 +68,13 @@ class EdgeService : LifecycleService() {
      */
     private val pinnedIcons = DrawnAppCache()
     /**
-     * The pinned apps as last warmed, with the keys they were warmed for (null while a warm-up is
-     * running): an open with the same keys uses them directly instead of resolving again.
+     * The background warm-up of the pinned apps: which keys, and once done, the apps (null if it
+     * failed). An open for the same keys uses it, waiting if it's under way, instead of resolving
+     * again. Null when nothing current is warmed (e.g. an app or the display just changed).
      */
-    private val warmed = MutableStateFlow<Pair<List<AppKey>, List<LaunchableApp>>?>(null)
+    private val warm = MutableStateFlow<WarmUp?>(null)
+
+    private class WarmUp(val keys: List<AppKey>, val done: Boolean = false, val apps: List<LaunchableApp>? = null)
     /** The settings the handle is showing; null until first read. */
     @Volatile private var latestSettings: DrawerSettings? = null
     /** What app labels and icons depend on; the caches are re-warmed when it changes. */
@@ -81,8 +84,6 @@ class EdgeService : LifecycleService() {
     private var openJob: Job? = null
     /** Recent apps with icons already drawn, so reopening the drawer doesn't redraw them. */
     private val recentIcons = DrawnAppCache(MAX_RECENT_ICONS)
-    /** Packages of pinned apps: changes to other apps don't need the pinned apps re-resolved. */
-    @Volatile private var pinnedPackages: Set<String> = emptySet()
     private var foreground = false
     /** Started through startForegroundService(), so startForeground() is mandatory. */
     private var foregroundRequired = false
@@ -142,7 +143,6 @@ class EdgeService : LifecycleService() {
         lifecycleScope.launch {
             repo.settings.collect { s ->
                 latestSettings = s
-                pinnedPackages = s.apps.mapTo(HashSet()) { it.pkg }
                 if (!s.enabled || !Settings.canDrawOverlays(this@EdgeService)) {
                     stop()
                 } else {
@@ -170,11 +170,15 @@ class EdgeService : LifecycleService() {
                 // only changes to pinned apps (or to many/all at once) re-warm the pinned apps.
                 appChanges(
                     this@EdgeService,
-                    relevant = { pkg -> pkg == null || pkg in pinnedPackages },
+                    relevant = ::affectsPinned,
                     onChange = { pkg ->
                         catalog.invalidate()
                         pinnedIcons.onAppChanged(pkg)
                         recentIcons.onAppChanged(pkg)
+                        // The warmed apps may now be stale (e.g. uninstalled): don't serve them.
+                        if (affectsPinned(pkg)) {
+                            warm.value = null
+                        }
                     },
                 ),
                 displayConfig.filterNotNull(),
@@ -182,9 +186,8 @@ class EdgeService : LifecycleService() {
                 .collectLatest { keys ->
                     // Sized to the pinned apps (no LRU limit to thrash), minus any unpinned since.
                     pinnedIcons.retain(keys.toSet())
-                    warmed.value = null
-                    // Only a successful load is kept; after a failure each open resolves for itself.
-                    pinnedApps(keys)?.let { warmed.value = keys to it }
+                    warm.value = WarmUp(keys)
+                    warm.value = WarmUp(keys, done = true, apps = pinnedApps(keys))
                 }
         }
     }
@@ -199,11 +202,8 @@ class EdgeService : LifecycleService() {
         openJob = lifecycleScope.launch {
             // The settings the handle already shows: no new read on every swipe.
             val keys = (latestSettings ?: repo.settings.first()).apps
-            // Warmed in the background for these keys: use that, waiting briefly if it's under way
-            // (e.g. after a rotation) rather than drawing the same icons twice.
-            val ready = withTimeoutOrNull(WARM_WAIT_MS) { warmed.first { it?.first == keys } }
-            val shown = host.openDrawer(
-                apps = ready?.second ?: pinnedApps(keys).orEmpty(),
+            host.openDrawer(
+                apps = warmedApps(keys) ?: pinnedApps(keys).orEmpty(),
                 hasPinned = keys.isNotEmpty(),
                 recent = recent,
                 expectRecents = expectRecents,
@@ -223,11 +223,29 @@ class EdgeService : LifecycleService() {
                     }
                 },
             )
-            if (!shown) {
-                recentJob?.cancel()
-            }
         }
     }
+
+    /**
+     * The background warm-up's apps for [keys], waiting for it if it's under way (e.g. after a
+     * rotation) rather than drawing the same icons twice; null if there is none for these keys
+     * (or it failed), in which case the caller resolves them itself.
+     */
+    private suspend fun warmedApps(keys: List<AppKey>): List<LaunchableApp>? {
+        // One may be just about to start (the settings flow and this open read the same change).
+        val started = withTimeoutOrNull(WARM_START_WAIT_MS) { warm.first { it?.keys == keys } } ?: return null
+        val finished = if (started.done) {
+            started
+        } else {
+            // Long enough for a slow warm-up; a stalled one falls back to resolving here.
+            withTimeoutOrNull(WARM_WAIT_MS) { warm.first { it?.keys == keys && it.done } }
+        }
+        return finished?.apps
+    }
+
+    /** Whether a change to [pkg] (null: several apps or a whole profile) concerns the pinned apps. */
+    private fun affectsPinned(pkg: String?): Boolean =
+        pkg == null || latestSettings?.apps.orEmpty().any { it.pkg == pkg }
 
     /** The pinned apps for [keys], in order, with icons (drawn ones from the cache); null if loading failed. */
     private suspend fun pinnedApps(keys: List<AppKey>): List<LaunchableApp>? = withContext(Dispatchers.Default) {
@@ -262,6 +280,10 @@ class EdgeService : LifecycleService() {
     }
 
     private fun useDrawConfig(config: DrawConfig) {
+        if (config != displayConfig.value) {
+            // Drawn for the old config: don't serve them until re-warmed.
+            warm.value = null
+        }
         pinnedIcons.use(config)
         recentIcons.use(config)
         displayConfig.value = config
@@ -332,10 +354,20 @@ class EdgeService : LifecycleService() {
         private const val NOTIFICATION_ID = 1
         private const val FOREGROUND_RETRY_MS = 500L
         private const val MAX_RECENT_ICONS = 32
-        private const val WARM_WAIT_MS = 1_000L
+        private const val WARM_START_WAIT_MS = 300L
+        private const val WARM_WAIT_MS = 5_000L
         private const val EXTRA_CLOSE_REASON = "reason"
 
         private const val EXTRA_FOREGROUND_REQUIRED = "foreground_required"
+
+        /** Starts or stops the service to match [enabled] and the overlay permission. */
+        fun sync(context: Context, enabled: Boolean) {
+            if (enabled && Settings.canDrawOverlays(context)) {
+                start(context)
+            } else {
+                stop(context)
+            }
+        }
 
         fun start(context: Context) {
             context.startForegroundService(

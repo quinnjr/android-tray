@@ -62,7 +62,7 @@ class DrawnAppCache(maxSize: Int = Int.MAX_VALUE) {
         if (pkg == null) {
             cache.clear()
         } else {
-            cache.forget { it.isIn(pkg) }
+            cache.forget { it.pkg == pkg }
         }
     }
 

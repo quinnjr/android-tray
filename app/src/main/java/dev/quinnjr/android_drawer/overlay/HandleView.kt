@@ -21,6 +21,8 @@ private const val OPEN_DISTANCE_DP = 24f
 class HandleView(
     context: Context,
     private val onOpen: () -> Unit,
+    /** The handle was picked up (long-press) with the finger at this point. */
+    private val onPickUp: (rawX: Float, rawY: Float) -> Unit,
     private val onDragMove: (rawX: Float, rawY: Float) -> Unit,
     private val onDrop: (side: Side, rawY: Float) -> Unit,
 ) : View(context) {
@@ -142,5 +144,6 @@ class HandleView(
 
     private fun pickedUp() {
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        onPickUp(lastRawX, lastRawY)
     }
 }
