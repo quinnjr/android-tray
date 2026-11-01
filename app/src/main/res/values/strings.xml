@@ -3,4 +3,11 @@
     <string name="channel_name">Edge handle</string>
     <string name="notification_title">Edge handle is active</string>
     <string name="app_unavailable">%1$s isn\'t available</string>
+    <string name="pinned_load_failed">Couldn\'t load your pinned apps. Open the drawer again to retry.</string>
+    <string name="pinned_refresh_failed">Couldn\'t refresh</string>
+    <string name="drawer_settings">Edge Drawer settings</string>
+    <string name="no_recent_apps">No recent apps</string>
+    <string name="pinned_unavailable">Your pinned apps aren\'t available right now</string>
+    <string name="no_apps_yet">No apps yet</string>
+    <string name="add_apps">Add apps</string>
 </resources>

@@ -5,15 +5,18 @@ import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.valuesIn
 
 /**
- * The apps loaded for a set of pinned [keys]: [apps] null if the load failed outright, or
- * [incomplete] if some couldn't be listed (shown, but counted as a failure, so it's retried).
+ * The apps loaded for a set of pinned [keys]: [apps] null if the load failed outright; [unknown]
+ * those that couldn't be listed this time (the rest is shown, counted as a failure, so a drawer
+ * opening retries).
  */
-internal class LoadedPinned<T>(val keys: Set<AppKey>, val apps: Map<AppKey, T>?, val incomplete: Boolean = false) {
+internal class LoadedPinned<T>(val keys: Set<AppKey>, val apps: Map<AppKey, T>?, val unknown: Set<AppKey> = emptySet()) {
+    val incomplete: Boolean get() = unknown.isNotEmpty()
+
     /** These apps in [order] (keys not loaded are left out); null if the load failed. */
     fun ordered(order: List<AppKey>): List<T>? = apps?.valuesIn(order)
 
     /** Only the apps among [keys] (dropping those unpinned since, and their icons). */
-    fun restrictedTo(keys: Set<AppKey>) = LoadedPinned(this.keys intersect keys, apps?.filterKeys { it in keys }, incomplete)
+    fun restrictedTo(keys: Set<AppKey>) = LoadedPinned(this.keys intersect keys, apps?.filterKeys { it in keys }, unknown intersect keys)
 }
 
 /**
@@ -29,7 +32,12 @@ internal fun <T> KeptLoad<T>?.keep(next: LoadedPinned<T>?): KeptLoad<T>? = when 
     // Failed with a good load to keep: keep it (minus apps unpinned since), noting this attempt.
     next.apps == null && this?.load?.apps != null ->
         KeptLoad(load.restrictedTo(next.keys), reloading = false, failed = true)
-    else -> KeptLoad(next, failed = next.apps == null || next.incomplete)
+    // Some apps couldn't be listed this time: keep their earlier copy (if any) rather than drop them.
+    next.apps != null && next.incomplete -> {
+        val earlier = this?.load?.apps.orEmpty().filterKeys { it in next.unknown }
+        KeptLoad(LoadedPinned(next.keys, earlier + next.apps, next.unknown), failed = true)
+    }
+    else -> KeptLoad(next, failed = next.apps == null)
 }
 
 /**

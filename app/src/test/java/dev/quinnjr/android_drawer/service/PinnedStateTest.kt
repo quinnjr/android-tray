@@ -79,9 +79,18 @@ class PinnedStateTest {
 
     @Test
     fun `an incomplete load (some apps couldn't be listed) shows what it has, as failed`() {
-        val partial = LoadedPinned(setOf(a, b), mapOf(a to "a/a.A"), incomplete = true)
+        val partial = LoadedPinned(setOf(a, b), mapOf(a to "a/a.A"), unknown = setOf(b))
         val kept = null.keep(partial)!!
         assertEquals(PinnedStatus.FAILED, kept.status(setOf(a, b)))
         assertEquals(listOf("a/a.A"), kept.load.ordered(listOf(a, b)))
+    }
+
+    @Test
+    fun `apps that couldn't be listed this time keep their earlier copy`() {
+        val good = null.keep(load(a, b, c))
+        val partial = LoadedPinned(setOf(a, b, c), mapOf(a to "a/a.A", b to "b/b.B"), unknown = setOf(c))
+        val kept = good.keep(partial)!!
+        assertEquals(listOf("a/a.A", "b/b.B", "c/c.C"), kept.load.ordered(listOf(a, b, c)))
+        assertEquals(PinnedStatus.FAILED, kept.status(setOf(a, b, c)))
     }
 }

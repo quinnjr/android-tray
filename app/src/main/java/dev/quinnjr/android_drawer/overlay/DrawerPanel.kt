@@ -84,6 +84,8 @@ import androidx.compose.ui.zIndex
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.Side
+import androidx.compose.ui.res.stringResource
+import dev.quinnjr.android_drawer.R
 import dev.quinnjr.android_drawer.settings.arrangedBy
 import dev.quinnjr.android_drawer.settings.moved
 import dev.quinnjr.android_drawer.ui.AppIcon
@@ -271,7 +273,7 @@ private fun Panel(
                         )
                         // Loading failed with nothing to show (not the same as unavailable apps).
                         pinned.isEmpty() && current == PinnedStatus.FAILED && hasPinned.value -> Text(
-                            "Couldn't load your pinned apps. Open the drawer again to retry.",
+                            stringResource(R.string.pinned_load_failed),
                             color = LABEL_COLOR,
                             textAlign = TextAlign.Center,
                             style = MaterialTheme.typography.bodyMedium,
@@ -296,7 +298,7 @@ private fun Panel(
                 }
                 // Its own line below the grid (not over its last row): a message, else a failed refresh.
                 val failedRefresh = status.value == PinnedStatus.FAILED && !apps.value.isNullOrEmpty()
-                (notice.value ?: if (failedRefresh) { "Couldn't refresh" } else { null })?.let { text ->
+                (notice.value ?: if (failedRefresh) { stringResource(R.string.pinned_refresh_failed) } else { null })?.let { text ->
                     Text(
                         text,
                         color = LABEL_COLOR,
@@ -309,7 +311,7 @@ private fun Panel(
                     onClick = onOpenSettings,
                     modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 4.dp),
                 ) {
-                    Icon(Icons.Filled.Settings, contentDescription = "Edge Drawer settings", tint = LABEL_COLOR)
+                    Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.drawer_settings), tint = LABEL_COLOR)
                 }
             }
         }
@@ -327,7 +329,7 @@ private fun RecentSection(recent: List<LaunchableApp>?, rows: Int, onLaunch: (La
             when {
                 recent == null -> Unit
                 recent.isEmpty() -> Text(
-                    "No recent apps",
+                    stringResource(R.string.no_recent_apps),
                     color = LABEL_COLOR.copy(alpha = 0.6f),
                     fontSize = 12.sp,
                     modifier = Modifier.align(Alignment.Center),
@@ -553,13 +555,13 @@ private fun NoApps(hasPinned: Boolean, onOpenSettings: () -> Unit, modifier: Mod
         if (hasPinned) {
             // Pinned apps exist but none can be shown, e.g. they're all in a paused work profile.
             Text(
-                "Your pinned apps aren't available right now",
+                stringResource(R.string.pinned_unavailable),
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
             )
         } else {
-            Text("No apps yet", style = MaterialTheme.typography.titleMedium)
-            Button(onClick = onOpenSettings) { Text("Add apps") }
+            Text(stringResource(R.string.no_apps_yet), style = MaterialTheme.typography.titleMedium)
+            Button(onClick = onOpenSettings) { Text(stringResource(R.string.add_apps)) }
         }
     }
 }
