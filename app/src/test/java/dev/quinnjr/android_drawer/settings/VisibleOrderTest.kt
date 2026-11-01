@@ -1,6 +1,5 @@
 package dev.quinnjr.android_drawer.settings
 
-import dev.quinnjr.android_drawer.ui.moved
 import org.junit.Assert.assertEquals
 import org.junit.Test
 

@@ -16,8 +16,11 @@ import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.movedAmongShown
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -28,18 +31,26 @@ import kotlinx.coroutines.launch
 class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = SettingsRepository(app)
     private val catalog = AppCatalog(app)
-    private val iconSizePx = (SETTINGS_ICON_SIZE.value * app.resources.displayMetrics.density).roundToInt()
+    /** Follows the activity's density (it survives Display size changes; this ViewModel doesn't need to). */
+    private val iconSizePx = MutableStateFlow(0)
 
     val settings: StateFlow<DrawerSettings?> =
         repo.settings.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** All launchable apps; null while loading. */
-    val allApps: StateFlow<List<LaunchableApp>?> = appsChanged(app)
-        .onStart { emit(Unit) }
+    val allApps: StateFlow<List<LaunchableApp>?> = combine(
+        appsChanged(app).onStart { emit(Unit) },
+        iconSizePx.filter { it > 0 },
+    ) { _, px -> px }
         // Icons drawn here, off the main thread, rather than while the list scrolls.
-        .map { catalog.allApps().withBitmaps(iconSizePx) }
+        .map { px -> catalog.allApps().withBitmaps(px) }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Call from the activity on creation (including after a Display size change). */
+    fun setDensity(density: Float) {
+        iconSizePx.value = (SETTINGS_ICON_SIZE.value * density).roundToInt()
+    }
 
     fun setEnabled(enabled: Boolean) = viewModelScope.launch {
         repo.update { it.copy(enabled = enabled) }
@@ -68,11 +79,6 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     private fun update(transform: (DrawerSettings) -> DrawerSettings) {
         viewModelScope.launch { repo.update(transform) }
     }
-}
-
-internal fun <T> List<T>.moved(from: Int, to: Int): List<T> {
-    if (from !in indices || to !in indices) return this
-    return toMutableList().apply { add(to, removeAt(from)) }
 }
 
 internal fun List<AppKey>.toggled(key: AppKey): List<AppKey> = if (key in this) this - key else this + key

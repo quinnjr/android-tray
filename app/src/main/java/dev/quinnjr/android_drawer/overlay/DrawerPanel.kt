@@ -15,6 +15,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -75,14 +76,15 @@ import androidx.compose.ui.zIndex
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.Side
+import dev.quinnjr.android_drawer.settings.moved
 import dev.quinnjr.android_drawer.ui.AppIcon
-import dev.quinnjr.android_drawer.ui.moved
 import dev.quinnjr.android_drawer.ui.theme.AppTheme
 import kotlinx.coroutines.launch
 
 private val DISMISS_DRAG = 80.dp
 private const val COLUMNS = 2
-private const val RECENT_ROWS = 2
+private val TWO_RECENT_ROWS_MIN_HEIGHT = 560.dp
+private val ONE_RECENT_ROW_MIN_HEIGHT = 360.dp
 private val CELL_HEIGHT = 84.dp
 private val CELL_SPACING = 12.dp
 
@@ -191,34 +193,43 @@ private fun Panel(
                 }
             },
     ) {
-        Column(Modifier.padding(top = 16.dp)) {
-            // Fixed above the scrolling pinned apps, so recents arriving late never shift or hide them.
-            if (expectRecents) RecentSection(recent.value, onLaunch)
-            Box(Modifier.weight(1f)) {
-                if (apps.isEmpty()) {
-                    NoApps(onOpenSettings, Modifier.fillMaxSize())
-                } else {
-                    PinnedGrid(apps, iconsLocked, onLaunch, onReorder)
-                }
+        BoxWithConstraints {
+            // Fewer recent rows when the drawer is short (landscape), so pinned apps keep room.
+            val recentRows = when {
+                !expectRecents -> 0
+                maxHeight >= TWO_RECENT_ROWS_MIN_HEIGHT -> 2
+                maxHeight >= ONE_RECENT_ROW_MIN_HEIGHT -> 1
+                else -> 0
             }
-            IconButton(
-                onClick = onOpenSettings,
-                modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 4.dp),
-            ) {
-                Icon(Icons.Filled.Settings, contentDescription = "Edge Drawer settings", tint = LABEL_COLOR)
+            Column(Modifier.padding(top = 16.dp)) {
+                // Fixed above the scrolling pinned apps, so recents arriving late never shift or hide them.
+                if (recentRows > 0) RecentSection(recent.value?.take(recentRows * COLUMNS), recentRows, onLaunch)
+                Box(Modifier.weight(1f)) {
+                    if (apps.isEmpty()) {
+                        NoApps(onOpenSettings, Modifier.fillMaxSize())
+                    } else {
+                        PinnedGrid(apps, iconsLocked, onLaunch, onReorder)
+                    }
+                }
+                IconButton(
+                    onClick = onOpenSettings,
+                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 4.dp),
+                ) {
+                    Icon(Icons.Filled.Settings, contentDescription = "Edge Drawer settings", tint = LABEL_COLOR)
+                }
             }
         }
     }
 }
 
 /**
- * Two rows of recently used apps and a divider below them, always the same height — empty while
- * [recent] is still null — so nothing below ever moves when they arrive.
+ * [rows] rows of recently used apps and a divider below them, always the same height — empty
+ * while [recent] is still null — so nothing below ever moves when they arrive.
  */
 @Composable
-private fun RecentSection(recent: List<LaunchableApp>?, onLaunch: (LaunchableApp, Rect?) -> Unit) {
+private fun RecentSection(recent: List<LaunchableApp>?, rows: Int, onLaunch: (LaunchableApp, Rect?) -> Unit) {
     Column(Modifier.padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(CELL_SPACING)) {
-        Box(Modifier.fillMaxWidth().height(CELL_HEIGHT * RECENT_ROWS + CELL_SPACING * (RECENT_ROWS - 1))) {
+        Box(Modifier.fillMaxWidth().height(CELL_HEIGHT * rows + CELL_SPACING * (rows - 1))) {
             when {
                 recent == null -> Unit
                 recent.isEmpty() -> Text(
@@ -306,7 +317,8 @@ private fun PinnedGrid(
     val reorder = if (iconsLocked) {
         Modifier
     } else {
-        Modifier.pointerInput(Unit) {
+        // Keyed on apps, like order/saved above, so the gesture never works on stale state.
+        Modifier.pointerInput(apps) {
             detectDragGesturesAfterLongPress(
                 onDragStart = { start ->
                     val info = appAt(start) ?: return@detectDragGesturesAfterLongPress

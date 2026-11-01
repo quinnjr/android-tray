@@ -47,6 +47,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -67,12 +68,14 @@ class EdgeService : LifecycleService() {
     private val resolved = MutableStateFlow<Map<AppKey, LaunchableApp>?>(null)
     /** Pinned keys the last resolve couldn't find (e.g. a paused work profile's apps). */
     private var unresolvable: Set<AppKey> = emptySet()
-    /** Display density; icons are re-drawn when it changes (e.g. Display size). */
-    private val density = MutableStateFlow(0f)
+    /** What app labels and icons depend on; they're reloaded when it changes. */
+    private val displayConfig = MutableStateFlow<DisplayConfig?>(null)
     private var opening = false
     private var recentJob: Job? = null
     /** Recent apps with icons already drawn, so reopening the drawer doesn't redraw them. */
     private val recentIcons = ConcurrentHashMap<AppKey, LaunchableApp>()
+    /** Bumped whenever [recentIcons] is cleared, so a drawing started before can't be stored after. */
+    @Volatile private var iconGeneration = 0
     private var foreground = false
     private var retryScheduled = false
 
@@ -107,7 +110,7 @@ class EdgeService : LifecycleService() {
             onFatal = ::stopSelf,
         )
         if (overlayContext !== this) overlayContext.registerComponentCallbacks(configCallbacks)
-        density.value = overlayContext.resources.displayMetrics.density
+        displayConfig.value = currentDisplayConfig()
         appOps.startWatchingMode(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, packageName, overlayPermissionListener)
         lifecycleScope.launch {
             repo.settings.collect { s ->
@@ -126,20 +129,19 @@ class EdgeService : LifecycleService() {
                 }
             }
         }
-        // Installed, removed or changed apps invalidate the cached launcher entries and icons.
-        lifecycleScope.launch {
-            appsChanged(this@EdgeService).collect {
-                catalog.invalidate()
-                recentIcons.clear()
-            }
-        }
         // Resolve icons off the main thread ahead of time so the drawer opens instantly. Keyed by
         // the set of pinned apps: reordering needs no new resolve.
         lifecycleScope.launch {
             combine(
                 repo.settings.map { it.apps.toSet() }.distinctUntilChanged(),
-                appsChanged(this@EdgeService).onStart { emit(Unit) },
-                density,
+                // Installed, removed or changed apps also invalidate the cached entries and icons.
+                appsChanged(this@EdgeService)
+                    .onEach {
+                        catalog.invalidate()
+                        clearRecentIcons()
+                    }
+                    .onStart { emit(Unit) },
+                displayConfig,
             ) { keys, _, _ -> keys }
                 .mapLatest { keys -> keys to resolveWithIcons(keys.toList()) }
                 .collect { (keys, apps) ->
@@ -187,7 +189,7 @@ class EdgeService : LifecycleService() {
             recentJob = lifecycleScope.launch {
                 recent.value = withContext(Dispatchers.Default) {
                     val start = SystemClock.elapsedRealtime()
-                    runCatching { catalog.recent(keys, recents).map(::withRecentIcon) }
+                    runCatching { catalog.recent(keys, recents, cached = { recentIcons[it] }).map(::withRecentIcon) }
                         .onFailure { Log.w(TAG, "Could not read recent apps", it) }
                         .getOrDefault(emptyList())
                         .also { Log.d(TAG, "Recent apps read in ${SystemClock.elapsedRealtime() - start} ms") }
@@ -224,16 +226,41 @@ class EdgeService : LifecycleService() {
 
     /** [app] with its icon drawn, reusing the drawing from an earlier open when there is one. */
     private fun withRecentIcon(app: LaunchableApp): LaunchableApp {
-        if (recentIcons.size > MAX_RECENT_ICONS) recentIcons.clear()
-        return recentIcons.getOrPut(app.key) { listOf(app).withBitmaps(iconSizePx()).first() }
+        if (app.bitmap != null) return app
+        val generation = iconGeneration
+        val drawn = listOf(app).withBitmaps(iconSizePx()).first()
+        if (generation == iconGeneration) {
+            if (recentIcons.size >= MAX_RECENT_ICONS) recentIcons.clear()
+            recentIcons[app.key] = drawn
+        }
+        return drawn
+    }
+
+    private fun clearRecentIcons() {
+        iconGeneration++
+        recentIcons.clear()
     }
 
     private fun onDisplayChanged() {
         host.relayout()
-        val newDensity = overlayContext.resources.displayMetrics.density
-        if (newDensity != density.value) recentIcons.clear()
-        density.value = newDensity
+        val config = currentDisplayConfig()
+        if (config != displayConfig.value) {
+            clearRecentIcons()
+            displayConfig.value = config
+        }
     }
+
+    private fun currentDisplayConfig(): DisplayConfig {
+        val res = overlayContext.resources
+        return DisplayConfig(
+            density = res.displayMetrics.density,
+            locales = res.configuration.locales.toLanguageTags(),
+            nightMode = res.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK,
+        )
+    }
+
+    /** Density (icon size), language (labels) and dark mode (themed icons). */
+    private data class DisplayConfig(val density: Float, val locales: String, val nightMode: Int)
 
     private fun iconSizePx(): Int = (DRAWER_ICON_SIZE.value * overlayContext.resources.displayMetrics.density).roundToInt()
 

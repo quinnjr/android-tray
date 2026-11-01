@@ -40,7 +40,13 @@ internal fun List<AppKey>.movedAmongShown(shown: Set<AppKey>, key: AppKey, delta
     val from = visible.indexOf(key)
     val to = from + delta
     if (from < 0 || to !in visible.indices) return this
-    return withVisibleOrder(visible.toMutableList().apply { add(to, removeAt(from)) })
+    return withVisibleOrder(visible.moved(from, to))
+}
+
+/** This list with the item at [from] moved to [to]; unchanged if either is out of range. */
+internal fun <T> List<T>.moved(from: Int, to: Int): List<T> {
+    if (from !in indices || to !in indices) return this
+    return toMutableList().apply { add(to, removeAt(from)) }
 }
 
 /**

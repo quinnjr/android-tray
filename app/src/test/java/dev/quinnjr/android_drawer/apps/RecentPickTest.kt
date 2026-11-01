@@ -139,6 +139,35 @@ class RecentPickTest {
     }
 
     @Test
+    fun `a copy is independent of the original`() {
+        val settled = history("a" to 1L)
+        val withTail = settled.copy().apply { resumed("b", 2L); paused("b") }
+        assertEquals(listOf("a"), settled.pick())
+        assertEquals(listOf("b", "a"), withTail.pick())
+    }
+
+    @Test
+    fun `an app left resumed long before the current one is not its split-screen partner`() {
+        // "x" crashed (no pause) an hour before "now" was opened full screen.
+        val hour = 60L * 60 * 1000
+        val h = UsageHistory().apply {
+            resumed("x", 0L)
+            resumed("now", hour)
+        }
+        assertEquals(listOf("x"), h.pick(launchable = all + "x"))
+    }
+
+    @Test
+    fun `an app resumed shortly before the current one counts as its split-screen partner`() {
+        val h = UsageHistory().apply {
+            resumed("a", 0L); paused("a")
+            resumed("split", 60_000L)
+            resumed("now", 120_000L)
+        }
+        assertEquals(listOf("a"), h.pick())
+    }
+
+    @Test
     fun `no history gives nothing`() {
         assertEquals(emptyList<String>(), UsageHistory().pick())
     }

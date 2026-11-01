@@ -14,25 +14,28 @@ class RecentApps(private val context: Context) {
     private val usage = context.getSystemService(UsageStatsManager::class.java)
     private val appOps = context.getSystemService(AppOpsManager::class.java)
     private val lock = Any()
-    private var history: UsageHistory? = null
+    /** History up to [settledUntil], old enough that no more events for it can still arrive. */
+    private var settled: UsageHistory? = null
     private var builtAt = 0L
-    private var readUntil = 0L
+    private var settledUntil = 0L
 
     /**
-     * Runs [block] on the usage history of the last few days. Only events since the previous
-     * call are read; the history is rebuilt from scratch once a day so it stays bounded.
+     * Runs [block] on the usage history of the last few days. Events are stored a moment after
+     * they're stamped, so the last [SETTLE_MS] are re-read on every call and only older events are
+     * kept between calls; the kept part is rebuilt from scratch once a day so it stays bounded.
      */
     internal fun <T> withHistory(now: Long = System.currentTimeMillis(), block: (UsageHistory) -> T): T = synchronized(lock) {
-        var h = history
-        if (h == null || now - builtAt > REBUILD_MS || now < readUntil) {
-            h = UsageHistory().replay(events(now - LOOKBACK_MS, now))
+        val settleAt = now - SETTLE_MS
+        var h = settled
+        if (h == null || now - builtAt > REBUILD_MS || settleAt < settledUntil) {
+            h = UsageHistory().replay(events(now - LOOKBACK_MS, settleAt))
             builtAt = now
         } else {
-            h.replay(events(readUntil, now))
+            h.replay(events(settledUntil, settleAt))
         }
-        history = h
-        readUntil = now
-        block(h)
+        settled = h
+        settledUntil = settleAt
+        block(h.copy().replay(events(settleAt, now)))
     }
 
     fun hasAccess(): Boolean {
@@ -81,6 +84,7 @@ class RecentApps(private val context: Context) {
         const val SYSTEM_RESOLVER = "android"
         const val LOOKBACK_MS = 3L * 24 * 60 * 60 * 1000
         const val REBUILD_MS = 24L * 60 * 60 * 1000
+        const val SETTLE_MS = 60L * 1000
     }
 }
 
@@ -130,16 +134,26 @@ internal class UsageHistory {
     /** The activity last resumed in [pkg], if known. */
     fun lastActivity(pkg: String): String? = lastActivity[pkg]
 
+    /** An independent copy, so recent events can be applied without changing this one. */
+    fun copy(): UsageHistory = UsageHistory().also {
+        it.lastUsed.putAll(lastUsed)
+        it.lastActivity.putAll(lastActivity)
+        it.resumed.putAll(resumed)
+    }
+
     /**
-     * At most two apps (split screen) are really on screen; an older app still marked resumed
-     * just never had its pause recorded (e.g. it crashed).
+     * The newest resumed app, plus a split-screen partner: another app still resumed that was
+     * resumed shortly before it. An app left resumed long before just never had its pause
+     * recorded (e.g. it crashed), so it isn't counted.
      */
-    private fun onScreen(): Set<String> = resumed.entries
-        .sortedByDescending { it.value }
-        .map { it.key.first }
-        .distinct()
-        .take(MAX_ON_SCREEN)
-        .toSet()
+    private fun onScreen(): Set<String> {
+        val byPackage = HashMap<String, Long>()
+        for ((key, time) in resumed) if (time > (byPackage[key.first] ?: Long.MIN_VALUE)) byPackage[key.first] = time
+        val newest = byPackage.entries.sortedByDescending { it.value }
+        val top = newest.firstOrNull() ?: return emptySet()
+        val partner = newest.getOrNull(1)?.takeIf { top.value - it.value <= SPLIT_SCREEN_WINDOW_MS }
+        return setOfNotNull(top.key, partner?.key)
+    }
 
     /** Packages newest first, skipping on-screen, [excluded] and non-[launchable] ones. */
     fun pick(excluded: Set<String>, launchable: Set<String>, limit: Int = Int.MAX_VALUE): List<String> {
@@ -152,6 +166,6 @@ internal class UsageHistory {
     }
 
     private companion object {
-        const val MAX_ON_SCREEN = 2
+        const val SPLIT_SCREEN_WINDOW_MS = 10L * 60 * 1000
     }
 }

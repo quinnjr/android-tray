@@ -48,7 +48,9 @@ fun List<LaunchableApp>.withBitmaps(sizePx: Int): List<LaunchableApp> =
 
 class AppCatalog(context: Context) {
     private val packageName = context.packageName
+    private val entriesLock = Any()
     @Volatile private var entriesCache: Map<String, List<LauncherActivityInfo>>? = null
+    @Volatile private var entriesGeneration = 0
     private val launcherApps = context.getSystemService(LauncherApps::class.java)
     private val userManager = context.getSystemService(UserManager::class.java)
 
@@ -65,7 +67,13 @@ class AppCatalog(context: Context) {
      * Up to [limit] recently used personal-profile apps, newest first, leaving out [pinned] apps,
      * this app and the home screen.
      */
-    fun recent(pinned: List<AppKey>, recents: RecentApps, limit: Int = RECENT_LIMIT): List<LaunchableApp> {
+    fun recent(
+        pinned: List<AppKey>,
+        recents: RecentApps,
+        /** Already-loaded apps (e.g. with icons drawn on an earlier open), so their icons aren't reloaded. */
+        cached: (AppKey) -> LaunchableApp? = { null },
+        limit: Int = RECENT_LIMIT,
+    ): List<LaunchableApp> {
         if (!recents.hasAccess()) return emptyList()
         val me = Process.myUserHandle()
         val serial = userManager.getSerialNumberForUser(me)
@@ -90,18 +98,27 @@ class AppCatalog(context: Context) {
                 .take(limit)
                 .toList()
         }
-        return picked.map { info -> info.toApp(AppKey(info.componentName.flattenToString(), serial)) }
+        return picked.map { info ->
+            val key = AppKey(info.componentName.flattenToString(), serial)
+            cached(key) ?: info.toApp(key)
+        }
     }
 
     /** Personal-profile launcher entries by package, cached until [invalidate]. */
-    private fun personalEntries(): Map<String, List<LauncherActivityInfo>> = entriesCache ?: runCatching {
-        launcherApps.getActivityList(null, Process.myUserHandle())
-    }.getOrDefault(emptyList())
-        .groupBy { it.componentName.packageName }
-        .also { entriesCache = it }
+    private fun personalEntries(): Map<String, List<LauncherActivityInfo>> {
+        entriesCache?.let { return it }
+        val generation = entriesGeneration
+        val entries = runCatching { launcherApps.getActivityList(null, Process.myUserHandle()) }
+            .getOrDefault(emptyList())
+            .groupBy { it.componentName.packageName }
+        // Don't store a list read before an invalidate() that happened while reading it.
+        synchronized(entriesLock) { if (generation == entriesGeneration) entriesCache = entries }
+        return entries
+    }
 
     /** Drops cached launcher entries; call when apps are installed, removed or changed. */
-    fun invalidate() {
+    fun invalidate() = synchronized(entriesLock) {
+        entriesGeneration++
         entriesCache = null
     }
 

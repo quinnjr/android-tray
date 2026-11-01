@@ -33,6 +33,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        vm.setDensity(resources.displayMetrics.density)
         setContent {
             AppTheme {
                 val settings by vm.settings.collectAsStateWithLifecycle()
