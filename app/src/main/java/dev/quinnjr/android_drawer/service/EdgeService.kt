@@ -14,6 +14,7 @@ import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.Display
@@ -23,11 +24,16 @@ import androidx.lifecycle.lifecycleScope
 import dev.quinnjr.android_drawer.R
 import dev.quinnjr.android_drawer.apps.AppCatalog
 import dev.quinnjr.android_drawer.apps.LaunchableApp
+import dev.quinnjr.android_drawer.apps.RecentApps
 import dev.quinnjr.android_drawer.apps.appsChanged
 import dev.quinnjr.android_drawer.overlay.OverlayHost
+import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.SettingsRepository
+import dev.quinnjr.android_drawer.settings.withVisibleOrder
 import dev.quinnjr.android_drawer.ui.MainActivity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -40,11 +46,14 @@ class EdgeService : LifecycleService() {
     private lateinit var repo: SettingsRepository
     private lateinit var host: OverlayHost
     private lateinit var catalog: AppCatalog
+    private lateinit var recents: RecentApps
     private lateinit var overlayContext: Context
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /** Drawer contents, resolved ahead of time; null until the first resolve finishes. */
     private var drawerApps: List<LaunchableApp>? = null
+    private var drawerKeys: List<AppKey>? = null
+    private var opening = false
     private var foreground = false
     private var retryScheduled = false
 
@@ -69,6 +78,7 @@ class EdgeService : LifecycleService() {
         overlayContext = createOverlayContext()
         repo = SettingsRepository(this)
         catalog = AppCatalog(this)
+        recents = RecentApps(this)
         host = OverlayHost(
             context = overlayContext,
             onOpen = ::openDrawer,
@@ -102,25 +112,50 @@ class EdgeService : LifecycleService() {
                 repo.settings.map { it.apps }.distinctUntilChanged(),
                 appsChanged(this@EdgeService).onStart { emit(Unit) },
             ) { keys, _ -> keys }
-                .map { keys -> withContext(Dispatchers.Default) { catalog.resolve(keys) } }
-                .collect { drawerApps = it }
+                .map { keys -> keys to withContext(Dispatchers.Default) { catalog.resolve(keys) } }
+                .collect { (keys, apps) ->
+                    drawerKeys = keys
+                    drawerApps = apps
+                }
         }
     }
 
     private fun openDrawer() {
+        // Further swipes while the drawer is being prepared would only redo the same work.
+        if (opening || host.isDrawerOpen) return
+        opening = true
         lifecycleScope.launch {
-            // Opened before the first resolve finished: resolve now rather than show "No apps yet".
-            val apps = drawerApps ?: withContext(Dispatchers.Default) {
-                catalog.resolve(repo.settings.first().apps)
+            try {
+                showDrawer()
+            } finally {
+                opening = false
             }
-            host.openDrawer(
-                apps = apps,
-                onLaunch = { app, bounds -> catalog.launch(app, bounds) },
-                onAddApps = {
-                    startActivity(Intent(this@EdgeService, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                },
-            )
         }
+    }
+
+    private suspend fun showDrawer() = coroutineScope {
+        val pinnedKeys = drawerKeys ?: repo.settings.first().apps
+        // Recents depend on what was just used, so they're read now, alongside the pinned apps.
+        val recent = async(Dispatchers.Default) {
+            val start = SystemClock.elapsedRealtime()
+            runCatching { catalog.recent(pinnedKeys, recents) }
+                .onFailure { Log.w(TAG, "Could not read recent apps", it) }
+                .getOrDefault(emptyList())
+                .also { Log.d(TAG, "Recent apps read in ${SystemClock.elapsedRealtime() - start} ms") }
+        }
+        // Opened before the first resolve finished: resolve now rather than show "No apps yet".
+        val apps = drawerApps ?: withContext(Dispatchers.Default) { catalog.resolve(pinnedKeys) }
+        host.openDrawer(
+            apps = apps,
+            recent = recent.await(),
+            onLaunch = { app, bounds -> catalog.launch(app, bounds) },
+            onReorder = { visibleOrder ->
+                lifecycleScope.launch { repo.update { it.copy(apps = it.apps.withVisibleOrder(visibleOrder)) } }
+            },
+            onOpenSettings = {
+                startActivity(Intent(this@EdgeService, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            },
+        )
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {

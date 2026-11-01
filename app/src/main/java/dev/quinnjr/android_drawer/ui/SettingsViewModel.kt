@@ -12,6 +12,7 @@ import dev.quinnjr.android_drawer.service.EdgeService
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.SettingsRepository
+import dev.quinnjr.android_drawer.settings.withVisibleOrder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -49,10 +50,16 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun toggleApp(key: AppKey) = update { it.copy(apps = it.apps.toggled(key)) }
-    fun moveApp(from: Int, to: Int) = update { it.copy(apps = it.apps.moved(from, to)) }
+    /**
+     * Moves an app within [shown], the pinned apps the settings screen could resolve; apps it
+     * couldn't show (e.g. a paused work profile's) keep their place.
+     */
+    fun moveApp(shown: List<AppKey>, from: Int, to: Int) =
+        update { it.copy(apps = it.apps.withVisibleOrder(shown.moved(from, to))) }
     fun setHeight(dp: Int) = update { it.copy(handleHeightDp = clampHandleHeightDp(dp)) }
     fun setAlpha(alpha: Float) = update { it.copy(handleAlpha = alpha.coerceIn(0.2f, 1f)) }
     fun setColor(color: Long) = update { it.copy(handleColor = color) }
+    fun setIconsLocked(locked: Boolean) = update { it.copy(iconsLocked = locked) }
 
     private fun update(transform: (DrawerSettings) -> DrawerSettings) {
         viewModelScope.launch { repo.update(transform) }

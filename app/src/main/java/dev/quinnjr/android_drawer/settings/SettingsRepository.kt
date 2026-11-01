@@ -31,6 +31,7 @@ class SettingsRepository(context: Context) {
             prefs[ALPHA] = next.handleAlpha
             prefs[COLOR] = next.handleColor
             prefs[APPS] = encodeApps(next.apps)
+            prefs[ICONS_LOCKED] = next.iconsLocked
         }
     }
 
@@ -44,6 +45,7 @@ class SettingsRepository(context: Context) {
             handleAlpha = this[ALPHA] ?: defaults.handleAlpha,
             handleColor = this[COLOR] ?: defaults.handleColor,
             apps = this[APPS]?.let(::decodeApps) ?: defaults.apps,
+            iconsLocked = this[ICONS_LOCKED] ?: defaults.iconsLocked,
         )
     }
 
@@ -55,5 +57,6 @@ class SettingsRepository(context: Context) {
         val ALPHA = floatPreferencesKey("handle_alpha")
         val COLOR = longPreferencesKey("handle_color")
         val APPS = stringPreferencesKey("apps")
+        val ICONS_LOCKED = booleanPreferencesKey("icons_locked")
     }
 }

@@ -14,6 +14,7 @@ import android.view.WindowManager
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.ui.platform.ComposeView
 import dev.quinnjr.android_drawer.apps.LaunchableApp
+import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.Side
 
@@ -82,8 +83,10 @@ class OverlayHost(
 
     fun openDrawer(
         apps: List<LaunchableApp>,
+        recent: List<LaunchableApp>,
         onLaunch: (LaunchableApp, Rect?) -> Unit,
-        onAddApps: () -> Unit,
+        onReorder: (List<AppKey>) -> Unit,
+        onOpenSettings: () -> Unit,
     ) {
         val s = settings ?: return
         if (drawer != null) return
@@ -96,8 +99,10 @@ class OverlayHost(
         compose.setContent {
             DrawerPanel(
                 apps = apps,
+                recent = recent,
                 side = s.side,
                 visible = state,
+                iconsLocked = s.iconsLocked,
                 // Cells stay clickable during the exit animation; ignore taps once closing.
                 onLaunch = { app, bounds ->
                     if (state.targetState) {
@@ -105,9 +110,10 @@ class OverlayHost(
                         closeDrawer()
                     }
                 },
-                onAddApps = {
+                onReorder = onReorder,
+                onOpenSettings = {
                     if (state.targetState) {
-                        onAddApps()
+                        onOpenSettings()
                         closeDrawer()
                     }
                 },

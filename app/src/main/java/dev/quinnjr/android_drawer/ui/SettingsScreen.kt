@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
+import dev.quinnjr.android_drawer.apps.AppCatalog
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.overlay.MAX_HANDLE_HEIGHT_DP
 import dev.quinnjr.android_drawer.overlay.MIN_HANDLE_HEIGHT_DP
@@ -53,11 +54,14 @@ fun SettingsScreen(
     chosenApps: List<LaunchableApp>,
     canDrawOverlays: Boolean,
     notificationsGranted: Boolean,
+    usageAccessGranted: Boolean,
     onGrantOverlay: () -> Unit,
     onGrantNotifications: () -> Unit,
+    onGrantUsageAccess: () -> Unit,
     onEnabledChange: (Boolean) -> Unit,
     onEditApps: () -> Unit,
     onMoveApp: (from: Int, to: Int) -> Unit,
+    onIconsLockedChange: (Boolean) -> Unit,
     onHeightChange: (Int) -> Unit,
     onAlphaChange: (Float) -> Unit,
     onColorChange: (Long) -> Unit,
@@ -83,6 +87,15 @@ fun SettingsScreen(
                         "Allow notifications",
                         "Android shows a small notification while the handle is running.",
                         onGrantNotifications,
+                    )
+                }
+            }
+            if (!usageAccessGranted) {
+                item {
+                    PermissionCard(
+                        "Allow usage access to show recent apps",
+                        "Optional. The drawer lists your ${AppCatalog.RECENT_LIMIT} most recently used apps above your pinned ones.",
+                        onGrantUsageAccess,
                     )
                 }
             }
@@ -136,6 +149,24 @@ fun SettingsScreen(
             item {
                 OutlinedButton(onClick = onEditApps, modifier = Modifier.padding(horizontal = 16.dp)) {
                     Text("Edit apps")
+                }
+            }
+            item {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { onIconsLockedChange(!settings.iconsLocked) }
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Lock drawer icons", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Stops long-press and drag from rearranging apps in the open drawer.",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    Switch(checked = settings.iconsLocked, onCheckedChange = onIconsLockedChange)
                 }
             }
             item { SectionTitle("Handle") }

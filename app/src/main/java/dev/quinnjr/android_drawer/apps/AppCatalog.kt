@@ -13,6 +13,7 @@ import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.os.UserHandle
 import android.os.UserManager
 import android.util.Log
@@ -31,6 +32,7 @@ data class LaunchableApp(
 )
 
 class AppCatalog(context: Context) {
+    private val packageName = context.packageName
     private val launcherApps = context.getSystemService(LauncherApps::class.java)
     private val userManager = context.getSystemService(UserManager::class.java)
 
@@ -42,6 +44,32 @@ class AppCatalog(context: Context) {
     /** The apps for [keys], in order; icons are loaded only for these. */
     fun resolve(keys: List<AppKey>): List<LaunchableApp> =
         resolveInOrder(keys, activities().associateBy { it.first }).map { (key, info) -> info.toApp(key) }
+
+    /**
+     * Up to [limit] recently used personal-profile apps, newest first, leaving out [pinned] apps,
+     * this app and the home screen.
+     */
+    fun recent(pinned: List<AppKey>, recents: RecentApps, limit: Int = RECENT_LIMIT): List<LaunchableApp> {
+        if (!recents.hasAccess()) return emptyList()
+        val me = Process.myUserHandle()
+        val serial = userManager.getSerialNumberForUser(me)
+        val byPackage = runCatching { launcherApps.getActivityList(null, me) }
+            .getOrDefault(emptyList())
+            .groupBy { it.componentName.packageName }
+        val excluded = buildSet {
+            add(packageName)
+            recents.homePackage()?.let(::add)
+            pinned.filter { it.userSerial == serial }.forEach { add(it.component.substringBefore('/')) }
+        }
+        // Scan the last few hours first; only widen the window if that didn't find enough apps.
+        val now = System.currentTimeMillis()
+        var picked = recents.history(now - SHORT_LOOKBACK_MS, now).pick(excluded, byPackage.keys, limit)
+        if (picked.size < limit) picked = recents.history(now - LONG_LOOKBACK_MS, now).pick(excluded, byPackage.keys, limit)
+        return picked.map { pkg ->
+            val info = byPackage.getValue(pkg).first()
+            info.toApp(AppKey(info.componentName.flattenToString(), serial))
+        }
+    }
 
     private fun activities(): List<Pair<AppKey, LauncherActivityInfo>> = launcherApps.profiles
         .filter { user -> userManager.isUserUnlocked(user) && !userManager.isQuietModeEnabled(user) }
@@ -71,8 +99,12 @@ class AppCatalog(context: Context) {
         }
     }
 
-    private companion object {
-        const val TAG = "EdgeDrawer"
+    companion object {
+        /** How many recent apps the drawer shows. */
+        const val RECENT_LIMIT = 4
+        private const val TAG = "EdgeDrawer"
+        private const val SHORT_LOOKBACK_MS = 6L * 60 * 60 * 1000
+        private const val LONG_LOOKBACK_MS = 3L * 24 * 60 * 60 * 1000
     }
 }
 

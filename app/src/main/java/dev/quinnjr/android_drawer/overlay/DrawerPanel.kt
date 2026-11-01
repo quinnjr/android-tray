@@ -11,54 +11,80 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridItemInfo
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.toOffset
+import androidx.compose.ui.zIndex
 import androidx.core.graphics.drawable.toBitmap
 import dev.quinnjr.android_drawer.apps.LaunchableApp
+import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.Side
+import dev.quinnjr.android_drawer.ui.moved
 import dev.quinnjr.android_drawer.ui.theme.AppTheme
 import kotlinx.coroutines.launch
 
 private val DISMISS_DRAG = 80.dp
+private val AUTOSCROLL_EDGE = 48.dp
+private const val AUTOSCROLL_STEP_PX = 12f
+
+/** App names and the settings gear; the panel is always dark, so always white. */
+private val LABEL_COLOR = Color.White
 
 /**
  * The slide-out panel. [visible] drives the enter/exit animation; [onHidden] fires once the
@@ -67,17 +93,21 @@ private val DISMISS_DRAG = 80.dp
 @Composable
 fun DrawerPanel(
     apps: List<LaunchableApp>,
+    recent: List<LaunchableApp>,
     side: Side,
     visible: MutableTransitionState<Boolean>,
+    iconsLocked: Boolean,
     onLaunch: (LaunchableApp, Rect?) -> Unit,
-    onAddApps: () -> Unit,
+    onReorder: (List<AppKey>) -> Unit,
+    onOpenSettings: () -> Unit,
     onDismiss: () -> Unit,
     onHidden: () -> Unit,
 ) {
     LaunchedEffect(visible.isIdle, visible.currentState) {
         if (visible.isIdle && !visible.currentState && !visible.targetState) onHidden()
     }
-    AppTheme {
+    // Always dark so the white app labels stay readable whatever the system theme.
+    AppTheme(dark = true) {
         val fromRight = side == Side.RIGHT
         Box(
             Modifier
@@ -95,7 +125,7 @@ fun DrawerPanel(
                 enter = slideInHorizontally { if (fromRight) it else -it } + fadeIn(),
                 exit = slideOutHorizontally { if (fromRight) it else -it } + fadeOut(),
             ) {
-                Panel(apps, fromRight, onLaunch, onAddApps, onDismiss)
+                Panel(apps, recent, fromRight, iconsLocked, onLaunch, onReorder, onOpenSettings, onDismiss)
             }
         }
     }
@@ -104,9 +134,12 @@ fun DrawerPanel(
 @Composable
 private fun Panel(
     apps: List<LaunchableApp>,
+    recent: List<LaunchableApp>,
     fromRight: Boolean,
+    iconsLocked: Boolean,
     onLaunch: (LaunchableApp, Rect?) -> Unit,
-    onAddApps: () -> Unit,
+    onReorder: (List<AppKey>) -> Unit,
+    onOpenSettings: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val dismissPx = with(LocalDensity.current) { DISMISS_DRAG.toPx() }
@@ -140,36 +173,175 @@ private fun Panel(
                 }
             },
     ) {
-        if (apps.isEmpty()) {
-            Column(
-                Modifier.fillMaxSize().padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
+        Column {
+            Box(Modifier.weight(1f)) {
+                if (apps.isEmpty() && recent.isEmpty()) {
+                    NoApps(onOpenSettings, Modifier.fillMaxSize())
+                } else {
+                    AppGrid(apps, recent, iconsLocked, onLaunch, onReorder, onOpenSettings)
+                }
+            }
+            IconButton(
+                onClick = onOpenSettings,
+                modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 4.dp),
             ) {
-                Text("No apps yet", style = MaterialTheme.typography.titleMedium)
-                Button(onClick = onAddApps) { Text("Add apps") }
+                Icon(Icons.Filled.Settings, contentDescription = "Edge Drawer settings", tint = LABEL_COLOR)
+            }
+        }
+    }
+}
+
+/**
+ * Recent apps, a divider, then the pinned apps. Unless [iconsLocked], a long-press on a pinned
+ * app picks it up so it can be dragged to a new place; the new order is saved on release.
+ */
+@Composable
+private fun AppGrid(
+    apps: List<LaunchableApp>,
+    recent: List<LaunchableApp>,
+    iconsLocked: Boolean,
+    onLaunch: (LaunchableApp, Rect?) -> Unit,
+    onReorder: (List<AppKey>) -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    val gridState = rememberLazyGridState()
+    val haptics = LocalHapticFeedback.current
+    val edgePx = with(LocalDensity.current) { AUTOSCROLL_EDGE.toPx() }
+    var order by remember(apps) { mutableStateOf(apps) }
+    // The order last handed to onReorder, so a later drag that restores it is saved too.
+    var saved by remember(apps) { mutableStateOf(apps) }
+    var dragging by remember { mutableStateOf<AppKey?>(null) }
+    // Finger position in grid coordinates, and where on the icon it grabbed.
+    var pointer by remember { mutableStateOf(Offset.Zero) }
+    var grab by remember { mutableStateOf(Offset.Zero) }
+    // Grid index of the first pinned app (after the recents and their divider).
+    val pinnedStart = recent.size + if (recent.isNotEmpty()) 1 else 0
+
+    fun pinnedAt(position: Offset): LazyGridItemInfo? = gridState.layoutInfo.visibleItemsInfo.firstOrNull {
+        it.index >= pinnedStart && it.index < pinnedStart + order.size &&
+            position.x >= it.offset.x && position.x < it.offset.x + it.size.width &&
+            position.y >= it.offset.y && position.y < it.offset.y + it.size.height
+    }
+
+    /** Moves the lifted app into the slot under the finger. */
+    fun followPointer() {
+        val key = dragging ?: return
+        val from = order.indexOfFirst { it.key == key }
+        // Wait for the grid to lay out the previous move before moving again.
+        val laidOut = gridState.layoutInfo.visibleItemsInfo.any { it.index == pinnedStart + from && it.key == key.encode() }
+        val target = pinnedAt(pointer) ?: return
+        val to = target.index - pinnedStart
+        if (laidOut && to != from) order = order.moved(from, to)
+    }
+
+    fun finishDrag() {
+        if (dragging != null && order != saved) {
+            onReorder(order.map { it.key })
+            saved = order
+        }
+        dragging = null
+    }
+
+    // While an app is lifted, keep scrolling each frame the finger rests near the top or bottom.
+    LaunchedEffect(dragging != null) {
+        while (dragging != null) {
+            withFrameNanos { }
+            val height = gridState.layoutInfo.viewportSize.height
+            val delta = when {
+                pointer.y < edgePx -> -AUTOSCROLL_STEP_PX
+                pointer.y > height - edgePx -> AUTOSCROLL_STEP_PX
+                else -> 0f
+            }
+            if (delta != 0f && gridState.dispatchRawDelta(delta) != 0f) followPointer()
+        }
+    }
+
+    val reorder = if (iconsLocked || order.isEmpty()) {
+        Modifier
+    } else {
+        Modifier.pointerInput(pinnedStart) {
+            detectDragGesturesAfterLongPress(
+                onDragStart = { start ->
+                    val info = pinnedAt(start) ?: return@detectDragGesturesAfterLongPress
+                    dragging = order[info.index - pinnedStart].key
+                    pointer = start
+                    grab = start - info.offset.toOffset()
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                },
+                onDragEnd = ::finishDrag,
+                onDragCancel = ::finishDrag,
+            ) { change, _ ->
+                if (dragging == null) return@detectDragGesturesAfterLongPress
+                change.consume()
+                pointer = change.position
+                followPointer()
+            }
+        }
+    }
+
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(2),
+        state = gridState,
+        userScrollEnabled = dragging == null,
+        modifier = Modifier.padding(vertical = 16.dp, horizontal = 8.dp).then(reorder),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        // Recently used apps, set apart from the pinned ones by a divider.
+        items(recent, key = { "recent:" + it.key.encode() }) { app -> AppCell(app, onLaunch) }
+        if (recent.isNotEmpty()) {
+            item(key = "recent-divider", span = { GridItemSpan(maxLineSpan) }) {
+                HorizontalDivider(Modifier.padding(horizontal = 8.dp))
+            }
+        }
+        if (order.isEmpty()) {
+            item(key = "no-apps", span = { GridItemSpan(maxLineSpan) }) {
+                NoApps(onOpenSettings, Modifier.fillMaxWidth().padding(top = 12.dp))
             }
         } else {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                modifier = Modifier.padding(vertical = 16.dp, horizontal = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                items(apps, key = { it.key.encode() }) { app -> AppCell(app, onLaunch) }
+            items(order, key = { it.key.encode() }) { app ->
+                val lifted = app.key == dragging
+                val cell = if (lifted) {
+                    Modifier.zIndex(1f).graphicsLayer {
+                        // Follow the finger, relative to wherever the grid currently places this cell.
+                        val placed = gridState.layoutInfo.visibleItemsInfo
+                            .firstOrNull { it.key == app.key.encode() }?.offset?.toOffset() ?: Offset.Zero
+                        val shift = pointer - grab - placed
+                        translationX = shift.x
+                        translationY = shift.y
+                        scaleX = 1.1f
+                        scaleY = 1.1f
+                    }
+                } else {
+                    Modifier.animateItem()
+                }
+                // A long-press that turns into a drag must not also launch the app on release.
+                AppCell(app, { a, b -> if (dragging == null) onLaunch(a, b) }, cell)
             }
         }
     }
 }
 
 @Composable
-private fun AppCell(app: LaunchableApp, onLaunch: (LaunchableApp, Rect?) -> Unit) {
+private fun NoApps(onOpenSettings: () -> Unit, modifier: Modifier) {
+    Column(
+        modifier.padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
+    ) {
+        Text("No apps yet", style = MaterialTheme.typography.titleMedium)
+        Button(onClick = onOpenSettings) { Text("Add apps") }
+    }
+}
+
+@Composable
+private fun AppCell(app: LaunchableApp, onLaunch: (LaunchableApp, Rect?) -> Unit, modifier: Modifier = Modifier) {
     val density = LocalDensity.current
     val sizePx = with(density) { 52.dp.roundToPx() }
     val bitmap = remember(app.key, sizePx) { app.icon?.toBitmap(sizePx, sizePx)?.asImageBitmap() }
     val position = remember { arrayOfNulls<LayoutCoordinates>(1) }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
+        modifier = modifier
             .clickable {
                 val b = position[0]?.takeIf { it.isAttached }?.boundsInWindow()
                 onLaunch(app, b?.let { Rect(it.left.toInt(), it.top.toInt(), it.right.toInt(), it.bottom.toInt()) })
@@ -182,6 +354,7 @@ private fun AppCell(app: LaunchableApp, onLaunch: (LaunchableApp, Rect?) -> Unit
         Text(
             app.label,
             fontSize = 12.sp,
+            color = LABEL_COLOR,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
