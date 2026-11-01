@@ -47,13 +47,16 @@ class SettingsRepository(context: Context) {
         .map { it.toSettings() }
         .distinctUntilChanged()
 
-    /** Applies [transform]; a failed write (e.g. storage full) is logged rather than crashing the caller. */
-    suspend fun update(transform: (DrawerSettings) -> DrawerSettings) {
-        try {
-            write(transform)
-        } catch (e: IOException) {
-            Log.e(TAG, "Could not save settings", e)
-        }
+    /**
+     * Applies [transform]; false if it couldn't be saved (e.g. storage full), which is logged rather
+     * than crashing the caller.
+     */
+    suspend fun update(transform: (DrawerSettings) -> DrawerSettings): Boolean = try {
+        write(transform)
+        true
+    } catch (e: IOException) {
+        Log.e(TAG, "Could not save settings", e)
+        false
     }
 
     private suspend fun write(transform: (DrawerSettings) -> DrawerSettings) {

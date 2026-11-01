@@ -52,8 +52,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -254,14 +252,14 @@ private fun Panel(
                 Box(Modifier.weight(1f)) {
                     val pinned = apps.value
                     // A drag keeps the grid (with its frozen order) even if a reload empties it.
-                    val dragActive = remember { mutableStateOf(false) }
+                    val drag = remember { GridDrag() }
                     when {
-                        pinned == null && !dragActive.value -> CircularProgressIndicator(
+                        pinned == null && !drag.active -> CircularProgressIndicator(
                             color = LABEL_COLOR,
                             modifier = Modifier.align(Alignment.Center).size(32.dp),
                         )
-                        pinned.isNullOrEmpty() && !dragActive.value -> NoApps(hasPinned.value, onOpenSettings, Modifier.fillMaxSize())
-                        else -> PinnedGrid(pinned.orEmpty(), dragActive, iconsLocked, onLaunch, onReorder)
+                        pinned.isNullOrEmpty() && !drag.active -> NoApps(hasPinned.value, onOpenSettings, Modifier.fillMaxSize())
+                        else -> PinnedGrid(pinned.orEmpty(), drag, iconsLocked, onLaunch, onReorder)
                     }
                 }
                 IconButton(
@@ -312,8 +310,8 @@ private fun RecentSection(recent: List<LaunchableApp>?, rows: Int, onLaunch: (La
 @Composable
 private fun PinnedGrid(
     latest: List<LaunchableApp>,
-    /** Set while an app is being dragged, so the panel keeps the grid even if a reload empties it. */
-    dragActive: MutableState<Boolean>,
+    /** The drag in progress, owned by the panel so it keeps the grid even if a reload empties it. */
+    drag: GridDrag,
     iconsLocked: Boolean,
     onLaunch: (LaunchableApp, Rect?) -> Unit,
     onReorder: (List<AppKey>) -> Unit,
@@ -321,25 +319,11 @@ private fun PinnedGrid(
     val gridState = rememberLazyGridState()
     val haptics = LocalHapticFeedback.current
     val edgePx = with(LocalDensity.current) { AUTOSCROLL_EDGE.toPx() }
-    var dragging by remember { mutableStateOf<AppKey?>(null) }
-    // While a drag is in progress, the order being dragged: a reload meanwhile waits for the
-    // finger to lift (it mustn't move icons under it or end the gesture).
-    var dragOrder by remember { mutableStateOf<List<LaunchableApp>?>(null) }
-    // The order shown when the drag started, to tell whether it changed.
-    var dragStart by remember { mutableStateOf<List<AppKey>>(emptyList()) }
-    // The order last released on, shown until it comes back saved (so the icon doesn't jump back
-    // meanwhile), unless the apps themselves change.
-    var released by remember { mutableStateOf<List<LaunchableApp>?>(null) }
-    val latestKeys = latest.map { it.key }
-    val stillSaving = released?.takeIf { r ->
-        val keys = r.map { it.key }
-        keys != latestKeys && keys.toSet() == latestKeys.toSet()
-    }
-    if (released != null && stillSaving == null) {
-        // Saved (or the apps changed): forget it, so a later order is never overridden by it.
-        SideEffect { released = null }
-    }
-    val order = dragOrder ?: stillSaving ?: latest
+    val dragging = drag.key
+    // While a drag is in progress its order is shown: a reload meanwhile waits for the finger to
+    // lift (it mustn't move icons under it). The released order then shows at once, as the drawer
+    // applies it before the save completes.
+    val order = drag.order ?: latest
     // The gesture below outlives recompositions (it isn't restarted by reloads), so it reads this.
     val currentOrder by rememberUpdatedState(order)
     // Finger position in grid coordinates, and where on the icon it grabbed.
@@ -355,31 +339,29 @@ private fun PinnedGrid(
 
     /** Moves the lifted app into the slot under the finger. */
     fun followPointer() {
-        val key = dragging ?: return
-        val current = dragOrder ?: return
+        val key = drag.key ?: return
+        val current = drag.order ?: return
         val from = current.indexOfFirst { it.key == key }
         // Wait for the grid to lay out the previous move before moving again.
         val laidOut = gridState.layoutInfo.visibleItemsInfo.any { it.index == from && it.key == key.encode() }
         val target = appAt(pointer) ?: return
         if (laidOut && target.index != from) {
-            dragOrder = current.moved(from, target.index)
+            drag.order = current.moved(from, target.index)
         }
     }
 
+    /** Released: saves the new order if it changed. */
     fun finishDrag() {
-        val dragged = dragOrder
-        if (dragging != null && dragged != null && dragged.map { it.key } != dragStart) {
+        val dragged = drag.order
+        if (drag.key != null && dragged != null && dragged.map { it.key } != drag.start) {
             onReorder(dragged.map { it.key })
-            released = dragged
         }
-        dragOrder = null
-        dragging = null
-        dragActive.value = false
+        drag.clear()
     }
 
     // While an app is lifted, keep scrolling each frame the finger rests near the top or bottom.
     LaunchedEffect(dragging != null) {
-        while (dragging != null) {
+        while (drag.key != null) {
             withFrameNanos { }
             if (!hasMoved) { continue }
             val height = gridState.layoutInfo.viewportSize.height
@@ -401,21 +383,20 @@ private fun PinnedGrid(
                 onDragStart = { start ->
                     val info = appAt(start) ?: return@detectDragGesturesAfterLongPress
                     val shown = currentOrder
-                    val app = shown.getOrNull(info.index) ?: return@detectDragGesturesAfterLongPress
-                    dragOrder = shown
-                    released = null
-                    dragStart = shown.map { it.key }
-                    dragging = app.key
-                    dragActive.value = true
+                    // By key, not index: the layout may still be a frame behind a reload.
+                    val app = shown.firstOrNull { it.key.encode() == info.key } ?: return@detectDragGesturesAfterLongPress
+                    drag.begin(app.key, shown)
                     pointer = start
                     hasMoved = false
                     grab = start - info.offset.toOffset()
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 },
                 onDragEnd = ::finishDrag,
-                onDragCancel = ::finishDrag,
+                // Cancelled (e.g. the drawer closed under the finger): nothing was released, so
+                // nothing is saved.
+                onDragCancel = drag::clear,
             ) { change, _ ->
-                if (dragging == null) { return@detectDragGesturesAfterLongPress }
+                if (drag.key == null) { return@detectDragGesturesAfterLongPress }
                 change.consume()
                 pointer = change.position
                 hasMoved = true
@@ -450,8 +431,30 @@ private fun PinnedGrid(
                 Modifier.animateItem()
             }
             // A long-press that turns into a drag must not also launch the app on release.
-            AppCell(app, { a, b -> if (dragging == null) { onLaunch(a, b) } }, cell)
+            AppCell(app, { a, b -> if (drag.key == null) { onLaunch(a, b) } }, cell)
         }
+    }
+}
+
+/** The pinned app being dragged in the drawer, if any: which one, and the order being dragged. */
+private class GridDrag {
+    var key by mutableStateOf<AppKey?>(null)
+        private set
+    var order by mutableStateOf<List<LaunchableApp>?>(null)
+    /** The order when the drag started, to tell whether it changed. */
+    var start: List<AppKey> = emptyList()
+        private set
+    val active: Boolean get() = key != null
+
+    fun begin(key: AppKey, order: List<LaunchableApp>) {
+        this.order = order
+        start = order.map { it.key }
+        this.key = key
+    }
+
+    fun clear() {
+        key = null
+        order = null
     }
 }
 
