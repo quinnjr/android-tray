@@ -18,10 +18,7 @@ import java.io.IOException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.emitAll
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.retryWhen
 
 // A corrupt file (e.g. power lost mid-write) is replaced with defaults rather than crashing.
@@ -35,27 +32,18 @@ class SettingsRepository(context: Context) {
 
     /**
      * The settings, kept up to date. If the file can't be read the flow keeps retrying (with
-     * backoff) rather than ending, so long-lived collectors still see later changes; until a first
-     * read succeeds, defaults are emitted so nobody waits forever.
+     * backoff) rather than ending, so long-lived collectors still see later changes. Nothing is
+     * made up meanwhile: defaults (handle on, no apps) could undo what the user chose.
      */
-    val settings: Flow<DrawerSettings> = flow {
-        var readOnce = false
-        emitAll(
-            store.data
-                .onEach { readOnce = true }
-                .retryWhen { cause, attempt ->
-                    if (cause !is IOException) {
-                        return@retryWhen false
-                    }
-                    Log.w(TAG, "Could not read settings; retrying", cause)
-                    if (!readOnce) {
-                        emit(emptyPreferences())
-                    }
-                    delay((attempt + 1).coerceAtMost(MAX_RETRY_STEPS) * RETRY_STEP_MS)
-                    true
-                },
-        )
-    }
+    val settings: Flow<DrawerSettings> = store.data
+        .retryWhen { cause, attempt ->
+            if (cause !is IOException) {
+                return@retryWhen false
+            }
+            Log.w(TAG, "Could not read settings; retrying", cause)
+            delay((attempt + 1).coerceAtMost(MAX_RETRY_STEPS) * RETRY_STEP_MS)
+            true
+        }
         .map { it.toSettings() }
         .distinctUntilChanged()
 

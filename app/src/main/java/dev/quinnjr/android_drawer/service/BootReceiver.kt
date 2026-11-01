@@ -11,6 +11,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+
+private const val SETTINGS_READ_TIMEOUT_MS = 5_000L
 
 /** Brings the handle back after a reboot or an app update. */
 class BootReceiver : BroadcastReceiver() {
@@ -19,7 +22,11 @@ class BootReceiver : BroadcastReceiver() {
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val enabled = SettingsRepository(context).settings.first().enabled
+                // Settings that can't be read soon (they're retried, not guessed) leave the handle
+                // off until the app is opened, rather than overrun the broadcast's time limit.
+                val enabled = withTimeoutOrNull(SETTINGS_READ_TIMEOUT_MS) {
+                    SettingsRepository(context).settings.first().enabled
+                } ?: return@launch
                 if (enabled && Settings.canDrawOverlays(context)) { EdgeService.start(context) }
             } catch (e: Exception) {
                 // Not worth crashing the app at boot; the handle comes back when the app is opened.

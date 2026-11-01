@@ -3,16 +3,15 @@ package dev.quinnjr.android_drawer.ui
 import android.app.Application
 import android.content.res.Configuration
 import android.provider.Settings
-import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import dev.quinnjr.android_drawer.TAG
 import dev.quinnjr.android_drawer.apps.AppCatalog
 import dev.quinnjr.android_drawer.apps.AppSource
 import dev.quinnjr.android_drawer.apps.DrawConfig
 import dev.quinnjr.android_drawer.apps.DrawnAppCache
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.appsChanged
+import dev.quinnjr.android_drawer.apps.orOnFailure
 import dev.quinnjr.android_drawer.apps.reloads
 import dev.quinnjr.android_drawer.overlay.clampHandleHeightDp
 import dev.quinnjr.android_drawer.service.EdgeService
@@ -21,7 +20,6 @@ import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.HANDLE_ALPHA_RANGE
 import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.movedAmongShown
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -63,18 +61,14 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         .shareIn(viewModelScope, SharingStarted.Eagerly)
         .reloads()
 
-    /** The pinned apps last loaded, which the icon cache is trimmed back to after the picker. */
-    @Volatile private var pinnedKeys: Set<AppKey> = emptySet()
-
     /** The pinned apps, for the settings screen; null while loading. */
-    val chosenApps: StateFlow<List<LaunchableApp>?> = combine(
+    val chosenApps: StateFlow<PinnedApps?> = combine(
         repo.settings.map { it.apps }.distinctUntilChanged(),
         reloads,
         drawConfig.filterNotNull(),
     ) { keys, _, config -> keys to config }
         .mapLatest { (keys, config) ->
-            pinnedKeys = keys.toSet()
-            drawn(config) { obtain -> catalog.resolve(keys, cached = { icons[it] }, obtain = obtain) }
+            PinnedApps(keys, drawn(config) { obtain -> catalog.resolve(keys, cached = { icons[it] }, obtain = obtain) })
         }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -83,7 +77,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     val allApps: StateFlow<List<LaunchableApp>?> = combine(reloads, drawConfig.filterNotNull()) { _, config -> config }
         .mapLatest { config -> drawn(config) { obtain -> catalog.allApps(obtain) } }
         // Once the picker is gone, keep only the pinned apps' icons rather than every app's.
-        .onCompletion { icons.retain(pinnedKeys) }
+        .onCompletion { settings.value?.let { s -> icons.retain(s.apps.toSet()) } }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
@@ -93,15 +87,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
      */
     private suspend fun drawn(config: DrawConfig, load: (obtain: AppSource) -> List<LaunchableApp>): List<LaunchableApp> {
         icons.use(config)
-        // As in the service: a failure (e.g. a profile removed meanwhile) mustn't crash the app.
-        return try {
-            icons.load(load)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not load apps", e)
-            emptyList()
-        }
+        return orOnFailure("apps", emptyList()) { icons.load(load) }
     }
 
     /** Call from the activity on creation (including after a configuration change). */
@@ -123,18 +109,23 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleApp(key: AppKey) = update { it.copy(apps = it.apps.toggled(key)) }
     /**
-     * Moves [key] by [delta] places among [shown], the pinned apps the settings screen could
-     * resolve; apps it couldn't show (e.g. a paused work profile's) keep their place.
+     * Moves [key] by [delta] places among the pinned apps the settings screen shows; apps it
+     * couldn't show (e.g. a paused work profile's) keep their place.
      */
-    fun moveApp(shown: Set<AppKey>, key: AppKey, delta: Int) =
+    fun moveApp(key: AppKey, delta: Int) {
+        val shown = chosenApps.value?.apps?.mapTo(HashSet()) { it.key } ?: return
         update { it.copy(apps = it.apps.movedAmongShown(shown, key, delta)) }
+    }
     fun setHeight(dp: Int) = update { it.copy(handleHeightDp = clampHandleHeightDp(dp)) }
     fun setAlpha(alpha: Float) = update { it.copy(handleAlpha = alpha.coerceIn(HANDLE_ALPHA_RANGE)) }
     fun setColor(color: Long) = update { it.copy(handleColor = color) }
     fun setIconsLocked(locked: Boolean) = update { it.copy(iconsLocked = locked) }
 
-    /** Unpins every app not in [available] (the ones that can be shown now). */
-    fun unpinAllBut(available: Set<AppKey>) = update { s -> s.copy(apps = s.apps.filter { it in available }) }
+    /**
+     * Unpins [unavailable] (as shown to the user): only those, so an app pinned since, or one
+     * that was merely still loading, is never removed by mistake.
+     */
+    fun unpin(unavailable: Set<AppKey>) = update { s -> s.copy(apps = s.apps - unavailable) }
 
     private fun update(transform: (DrawerSettings) -> DrawerSettings) {
         viewModelScope.launch { repo.update(transform) }

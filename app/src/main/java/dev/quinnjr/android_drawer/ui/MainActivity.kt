@@ -85,12 +85,8 @@ class MainActivity : ComponentActivity() {
                         onGrantUsageAccess = ::openUsageAccessSettings,
                         onEnabledChange = vm::setEnabled,
                         onEditApps = { picking = true },
-                        onUnpinUnavailable = {
-                            chosenApps?.let { shown -> vm.unpinAllBut(shown.mapTo(HashSet()) { it.key }) }
-                        },
-                        onMoveApp = { from, to ->
-                            chosenApps?.let { shown -> vm.moveApp(shown.mapTo(HashSet()) { it.key }, shown[from].key, to - from) }
-                        },
+                        onUnpinUnavailable = vm::unpin,
+                        onMoveApp = vm::moveApp,
                         onIconsLockedChange = vm::setIconsLocked,
                         onHeightChange = vm::setHeight,
                         onAlphaChange = vm::setAlpha,

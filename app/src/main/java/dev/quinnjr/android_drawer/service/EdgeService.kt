@@ -33,16 +33,16 @@ import dev.quinnjr.android_drawer.apps.DrawnAppCache
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.RecentApps
 import dev.quinnjr.android_drawer.apps.appChanges
+import dev.quinnjr.android_drawer.apps.orOnFailure
 import dev.quinnjr.android_drawer.overlay.DRAWER_ICON_SIZE
 import dev.quinnjr.android_drawer.overlay.OverlayHost
 import dev.quinnjr.android_drawer.settings.AppKey
+import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.withVisibleOrder
 import dev.quinnjr.android_drawer.ui.MainActivity
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
@@ -50,11 +50,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.yield
 
 class EdgeService : LifecycleService() {
     private lateinit var repo: SettingsRepository
@@ -69,8 +67,13 @@ class EdgeService : LifecycleService() {
      * Their order always comes from settings when the drawer opens, so it can never be stale.
      */
     private val pinnedIcons = DrawnAppCache()
-    /** The background warm-up in progress, which an open waits for rather than duplicating. */
-    @Volatile private var warming: Job? = null
+    /**
+     * The pinned apps as last warmed, with the keys they were warmed for (null while a warm-up is
+     * running): an open with the same keys uses them directly instead of resolving again.
+     */
+    private val warmed = MutableStateFlow<Pair<List<AppKey>, List<LaunchableApp>>?>(null)
+    /** The settings the handle is showing; null until first read. */
+    @Volatile private var latestSettings: DrawerSettings? = null
     /** What app labels and icons depend on; the caches are re-warmed when it changes. */
     private val displayConfig = MutableStateFlow<DrawConfig?>(null)
     private var recentJob: Job? = null
@@ -138,6 +141,7 @@ class EdgeService : LifecycleService() {
         ContextCompat.registerReceiver(this, closeDrawerReceiver, closeActions, ContextCompat.RECEIVER_NOT_EXPORTED)
         lifecycleScope.launch {
             repo.settings.collect { s ->
+                latestSettings = s
                 pinnedPackages = s.apps.mapTo(HashSet()) { it.pkg }
                 if (!s.enabled || !Settings.canDrawOverlays(this@EdgeService)) {
                     stop()
@@ -178,8 +182,9 @@ class EdgeService : LifecycleService() {
                 .collectLatest { keys ->
                     // Sized to the pinned apps (no LRU limit to thrash), minus any unpinned since.
                     pinnedIcons.retain(keys.toSet())
-                    warming = currentCoroutineContext().job
-                    pinnedApps(keys)
+                    warmed.value = null
+                    // Only a successful load is kept; after a failure each open resolves for itself.
+                    pinnedApps(keys)?.let { warmed.value = keys to it }
                 }
         }
     }
@@ -192,10 +197,13 @@ class EdgeService : LifecycleService() {
         val expectRecents = recents.hasAccess()
         val recent = mutableStateOf<List<LaunchableApp>?>(null)
         openJob = lifecycleScope.launch {
-            val keys = repo.settings.first().apps
-            awaitWarmUp()
+            // The settings the handle already shows: no new read on every swipe.
+            val keys = (latestSettings ?: repo.settings.first()).apps
+            // Warmed in the background for these keys: use that, waiting briefly if it's under way
+            // (e.g. after a rotation) rather than drawing the same icons twice.
+            val ready = withTimeoutOrNull(WARM_WAIT_MS) { warmed.first { it?.first == keys } }
             val shown = host.openDrawer(
-                apps = pinnedApps(keys),
+                apps = ready?.second ?: pinnedApps(keys).orEmpty(),
                 hasPinned = keys.isNotEmpty(),
                 recent = recent,
                 expectRecents = expectRecents,
@@ -221,51 +229,18 @@ class EdgeService : LifecycleService() {
         }
     }
 
-    /**
-     * Waits (briefly) for a warm-up drawing the pinned icons, rather than drawing them again. A
-     * warm-up restarted meanwhile (e.g. by a rotation) is followed to the new one.
-     */
-    private suspend fun awaitWarmUp() {
-        withTimeoutOrNull(WARM_WAIT_MS) {
-            while (true) {
-                val job = warming ?: break
-                if (job.isActive) {
-                    job.join()
-                } else if (job.isCancelled) {
-                    // Superseded: let the restarted warm-up begin and publish itself, then follow it.
-                    yield()
-                    if (warming === job) {
-                        break
-                    }
-                } else {
-                    break
-                }
-            }
-        }
-    }
-
-    /** The pinned apps for [keys], in order, with icons; drawn icons come from the cache. */
-    private suspend fun pinnedApps(keys: List<AppKey>): List<LaunchableApp> = withContext(Dispatchers.Default) {
-        loadSafely("pinned apps") {
+    /** The pinned apps for [keys], in order, with icons (drawn ones from the cache); null if loading failed. */
+    private suspend fun pinnedApps(keys: List<AppKey>): List<LaunchableApp>? = withContext(Dispatchers.Default) {
+        orOnFailure("pinned apps", null) {
             pinnedIcons.load { obtain -> catalog.resolve(keys, cached = { pinnedIcons[it] }, obtain = obtain) }
         }
     }
 
     private suspend fun recentApps(pinned: List<AppKey>): List<LaunchableApp> = withContext(Dispatchers.Default) {
         val start = SystemClock.elapsedRealtime()
-        loadSafely("recent apps") {
+        orOnFailure("recent apps", emptyList()) {
             recentIcons.load { obtain -> catalog.recent(pinned, recents, obtain) }
         }.also { Log.d(TAG, "Recent apps read in ${SystemClock.elapsedRealtime() - start} ms") }
-    }
-
-    /** Runs [load]; a failure (e.g. a profile removed meanwhile) is logged and gives no apps rather than a crash. */
-    private suspend inline fun loadSafely(what: String, load: () -> List<LaunchableApp>): List<LaunchableApp> = try {
-        load()
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        Log.w(TAG, "Could not load $what", e)
-        emptyList()
     }
 
     /**

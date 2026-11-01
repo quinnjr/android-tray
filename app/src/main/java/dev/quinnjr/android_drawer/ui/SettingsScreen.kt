@@ -41,9 +41,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import dev.quinnjr.android_drawer.apps.AppCatalog
-import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.overlay.MAX_HANDLE_HEIGHT_DP
 import dev.quinnjr.android_drawer.overlay.MIN_HANDLE_HEIGHT_DP
+import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.HANDLE_ALPHA_RANGE
 
@@ -54,7 +54,7 @@ val HANDLE_COLORS = listOf(0xFFB0B0B0, 0xFFFFFFFF, 0xFF4285F4, 0xFF34A853, 0xFFF
 fun SettingsScreen(
     settings: DrawerSettings,
     /** Null while the app list is still loading. */
-    chosenApps: List<LaunchableApp>?,
+    chosenApps: PinnedApps?,
     canDrawOverlays: Boolean,
     notificationsGranted: Boolean,
     usageAccessGranted: Boolean,
@@ -63,14 +63,14 @@ fun SettingsScreen(
     onGrantUsageAccess: () -> Unit,
     onEnabledChange: (Boolean) -> Unit,
     onEditApps: () -> Unit,
-    onUnpinUnavailable: () -> Unit,
-    onMoveApp: (from: Int, to: Int) -> Unit,
+    onUnpinUnavailable: (Set<AppKey>) -> Unit,
+    onMoveApp: (key: AppKey, delta: Int) -> Unit,
     onIconsLockedChange: (Boolean) -> Unit,
     onHeightChange: (Int) -> Unit,
     onAlphaChange: (Float) -> Unit,
     onColorChange: (Long) -> Unit,
 ) {
-    val shown = chosenApps.orEmpty()
+    val shown = chosenApps?.apps.orEmpty()
     Scaffold(topBar = { TopAppBar(title = { Text("Edge Drawer") }) }) { padding ->
         LazyColumn(
             contentPadding = padding,
@@ -129,7 +129,7 @@ fun SettingsScreen(
             item { SectionTitle("Drawer apps") }
             if (chosenApps == null) {
                 item { CircularProgressIndicator(Modifier.padding(horizontal = 16.dp).size(24.dp)) }
-            } else if (chosenApps.isEmpty() && settings.apps.isEmpty()) {
+            } else if (chosenApps.keys.isEmpty()) {
                 item {
                     Text(
                         "No apps chosen yet.",
@@ -140,19 +140,20 @@ fun SettingsScreen(
             }
             // Pinned apps that can't be shown now (e.g. a paused work profile): say so, and let
             // them be unpinned, since the picker can't show them either.
-            val unavailable = settings.apps.size - shown.size
-            if (chosenApps != null && unavailable > 0) {
+            // Counted from the same snapshot as the list, so loading apps never count as missing.
+            val unavailable = chosenApps?.unavailable.orEmpty()
+            if (unavailable.isNotEmpty()) {
                 item {
                     Column(Modifier.padding(horizontal = 16.dp)) {
                         Text(
-                            if (unavailable == 1) {
+                            if (unavailable.size == 1) {
                                 "1 pinned app isn't available right now (e.g. its work profile is paused)."
                             } else {
-                                "$unavailable pinned apps aren't available right now (e.g. their work profile is paused)."
+                                "${unavailable.size} pinned apps aren't available right now (e.g. their work profile is paused)."
                             },
                             style = MaterialTheme.typography.bodyMedium,
                         )
-                        TextButton(onClick = onUnpinUnavailable) { Text("Unpin unavailable apps") }
+                        TextButton(onClick = { onUnpinUnavailable(unavailable) }) { Text("Unpin unavailable apps") }
                     }
                 }
             }
@@ -163,10 +164,10 @@ fun SettingsScreen(
                 ) {
                     AppIcon(app)
                     Text(app.label, Modifier.weight(1f).padding(start = 16.dp))
-                    IconButton(onClick = { onMoveApp(index, index - 1) }, enabled = index > 0) {
+                    IconButton(onClick = { onMoveApp(app.key, -1) }, enabled = index > 0) {
                         Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Move up")
                     }
-                    IconButton(onClick = { onMoveApp(index, index + 1) }, enabled = index < shown.lastIndex) {
+                    IconButton(onClick = { onMoveApp(app.key, +1) }, enabled = index < shown.lastIndex) {
                         Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Move down")
                     }
                 }
