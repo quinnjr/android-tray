@@ -22,6 +22,9 @@ data class AppKey(val component: String, val userSerial: Long) {
     }
 }
 
+/** Allowed handle opacity: never fully invisible, so it can still be found. */
+val HANDLE_ALPHA_RANGE = 0.2f..1f
+
 data class DrawerSettings(
     val enabled: Boolean = true,
     val side: Side = Side.RIGHT,

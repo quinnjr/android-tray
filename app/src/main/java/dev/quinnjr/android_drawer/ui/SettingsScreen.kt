@@ -44,6 +44,7 @@ import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.overlay.MAX_HANDLE_HEIGHT_DP
 import dev.quinnjr.android_drawer.overlay.MIN_HANDLE_HEIGHT_DP
 import dev.quinnjr.android_drawer.settings.DrawerSettings
+import dev.quinnjr.android_drawer.settings.HANDLE_ALPHA_RANGE
 
 val HANDLE_COLORS = listOf(0xFFB0B0B0, 0xFFFFFFFF, 0xFF4285F4, 0xFF34A853, 0xFFFBBC04, 0xFFEA4335)
 
@@ -186,7 +187,7 @@ fun SettingsScreen(
                 LabeledSlider(
                     "Opacity",
                     value = settings.handleAlpha,
-                    range = 0.2f..1f,
+                    range = HANDLE_ALPHA_RANGE,
                     onChange = onAlphaChange,
                 )
             }

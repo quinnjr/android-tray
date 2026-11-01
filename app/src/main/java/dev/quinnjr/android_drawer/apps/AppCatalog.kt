@@ -73,15 +73,18 @@ class AppCatalog(context: Context) {
      * every installed app), and icons load only for these.
      */
     fun resolve(keys: List<AppKey>, cached: (AppKey) -> LaunchableApp? = { null }): List<LaunchableApp> {
-        val known = keys.mapNotNull { key -> cached(key)?.let { key to it } }.toMap()
+        // Checked for every key, cached or not: a cached app's profile may since have been
+        // paused, locked or removed.
+        val available = availableUsers()
+        val shown = keys.filter { it.userSerial in available }
+        val known = shown.mapNotNull { key -> cached(key)?.let { key to it } }.toMap()
         val found = HashMap<AppKey, LauncherActivityInfo>()
-        val wanted = keys.filter { it !in known }
+        val wanted = shown.filter { it !in known }
             .groupBy { it.userSerial to it.pkg }
             .mapValues { it.value.toHashSet() }
         for ((where, group) in wanted) {
             val (serial, pkg) = where
-            val user = userManager.getUserForSerialNumber(serial) ?: continue
-            if (!userManager.isUserUnlocked(user) || userManager.isQuietModeEnabled(user)) continue
+            val user = available.getValue(serial)
             runCatching { launcherApps.getActivityList(pkg, user) }
                 .onFailure { Log.w(TAG, "Could not list $pkg for $user", it) }
                 .getOrDefault(emptyList())
@@ -90,8 +93,13 @@ class AppCatalog(context: Context) {
                     if (key in group) found[key] = info
                 }
         }
-        return keys.mapNotNull { key -> known[key] ?: found[key]?.toApp(key) }
+        return shown.mapNotNull { key -> known[key] ?: found[key]?.toApp(key) }
     }
+
+    /** Profiles whose apps can be shown now (unlocked, not paused), by serial number. */
+    private fun availableUsers(): Map<Long, UserHandle> = launcherApps.profiles
+        .filter { user -> userManager.isUserUnlocked(user) && !userManager.isQuietModeEnabled(user) }
+        .associateBy { userManager.getSerialNumberForUser(it) }
 
     /**
      * Up to [limit] recently used personal-profile apps, newest first, leaving out [pinned] apps,
@@ -163,10 +171,8 @@ class AppCatalog(context: Context) {
         return recents.homePackages().also { homeCache = now to it }
     }
 
-    private fun activities(): List<Pair<AppKey, LauncherActivityInfo>> = launcherApps.profiles
-        .filter { user -> userManager.isUserUnlocked(user) && !userManager.isQuietModeEnabled(user) }
-        .flatMap { user ->
-            val serial = userManager.getSerialNumberForUser(user)
+    private fun activities(): List<Pair<AppKey, LauncherActivityInfo>> = availableUsers().entries
+        .flatMap { (serial, user) ->
             runCatching { launcherApps.getActivityList(null, user) }
                 .onFailure { Log.w(TAG, "Could not list apps for $user", it) }
                 .getOrDefault(emptyList())
@@ -236,6 +242,7 @@ fun appsChanged(context: Context): Flow<String?> = callbackFlow {
         addAction(Intent.ACTION_MANAGED_PROFILE_AVAILABLE)
         addAction(Intent.ACTION_MANAGED_PROFILE_UNAVAILABLE)
         addAction(Intent.ACTION_MANAGED_PROFILE_UNLOCKED)
+        addAction(Intent.ACTION_MANAGED_PROFILE_REMOVED)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
             addAction(Intent.ACTION_PROFILE_AVAILABLE)
             addAction(Intent.ACTION_PROFILE_UNAVAILABLE)

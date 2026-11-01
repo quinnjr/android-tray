@@ -60,4 +60,16 @@ class IconCacheTest {
         cache.put("b", "stale", generation)
         assertNull(cache["b"])
     }
+
+    @Test
+    fun `retain drops other keys without rejecting values being drawn`() {
+        val cache = IconCache<String, String>()
+        val generation = cache.generation()
+        cache.put("a", "A", generation)
+        cache.put("b", "B", generation)
+        cache.retain(setOf("a"))
+        assertNull(cache["b"])
+        cache.put("c", "C", generation)
+        assertEquals("C", cache["c"])
+    }
 }

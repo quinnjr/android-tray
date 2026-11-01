@@ -42,6 +42,7 @@ import dev.quinnjr.android_drawer.ui.MainActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -52,6 +53,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class EdgeService : LifecycleService() {
     private lateinit var repo: SettingsRepository
@@ -65,7 +67,9 @@ class EdgeService : LifecycleService() {
      * Pinned apps with icons drawn, kept warm in the background so the drawer opens instantly.
      * Their order always comes from settings when the drawer opens, so it can never be stale.
      */
-    private val pinnedIcons = DrawnAppCache(MAX_PINNED_ICONS)
+    private val pinnedIcons = DrawnAppCache()
+    /** The background warm-up in progress, which an open waits for rather than duplicating. */
+    @Volatile private var warming: Job? = null
     /** What app labels and icons depend on; the caches are re-warmed when it changes. */
     private val displayConfig = MutableStateFlow<DrawConfig?>(null)
     private var recentJob: Job? = null
@@ -170,7 +174,15 @@ class EdgeService : LifecycleService() {
                 ),
                 displayConfig.filterNotNull(),
             ) { keys, _, _ -> keys }
-                .collectLatest { keys -> pinnedApps(keys) }
+                .collectLatest { keys ->
+                    // Sized to the pinned apps (no LRU limit to thrash), minus any unpinned since.
+                    pinnedIcons.retain(keys.toSet())
+                    coroutineScope {
+                        val job = launch { pinnedApps(keys) }
+                        warming = job
+                        job.join()
+                    }
+                }
         }
     }
 
@@ -183,6 +195,8 @@ class EdgeService : LifecycleService() {
         val recent = mutableStateOf<List<LaunchableApp>?>(null)
         openJob = lifecycleScope.launch {
             val keys = repo.settings.first().apps
+            // A warm-up in progress (e.g. after a config change) is drawing these same icons.
+            warming?.let { withTimeoutOrNull(WARM_WAIT_MS) { it.join() } }
             val shown = host.openDrawer(
                 apps = pinnedApps(keys),
                 hasPinned = keys.isNotEmpty(),
@@ -319,7 +333,7 @@ class EdgeService : LifecycleService() {
         private const val NOTIFICATION_ID = 1
         private const val FOREGROUND_RETRY_MS = 500L
         private const val MAX_RECENT_ICONS = 32
-        private const val MAX_PINNED_ICONS = 64
+        private const val WARM_WAIT_MS = 1_000L
         private const val EXTRA_CLOSE_REASON = "reason"
 
         private const val EXTRA_FOREGROUND_REQUIRED = "foreground_required"

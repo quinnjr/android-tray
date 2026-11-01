@@ -56,5 +56,8 @@ class DrawnAppCache(maxSize: Int = Int.MAX_VALUE) {
         if (pkg == null) cache.clear() else cache.forget { it.isIn(pkg) }
     }
 
+    /** Keeps only [keys] (e.g. the apps still pinned). */
+    fun retain(keys: Set<AppKey>) = cache.retain(keys)
+
     fun clear() = cache.clear()
 }

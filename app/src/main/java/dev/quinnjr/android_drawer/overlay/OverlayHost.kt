@@ -22,6 +22,7 @@ import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.Side
 
 private const val HANDLE_TOUCH_WIDTH_DP = 24
+private val DEFAULT_SETTINGS = DrawerSettings()
 
 /**
  * Owns the overlay windows. Any window-manager failure (usually the overlay permission
@@ -46,6 +47,7 @@ class OverlayHost(
     private var drawerOwner: OverlayLifecycleOwner? = null
     private var drawerState: MutableTransitionState<Boolean>? = null
     private var drawerClosed: (() -> Unit)? = null
+    private var drawerParams: WindowManager.LayoutParams? = null
     /** Screen size and navigation-bar insets for the drag in progress. */
     private var dragBounds: Pair<Size, Rect>? = null
     private var fullscreen = false
@@ -53,8 +55,9 @@ class OverlayHost(
     private var watching = false
 
     val handleWidthPx get() = (HANDLE_TOUCH_WIDTH_DP * density).toInt()
-    val handleHeightPx get() = (clampHandleHeightDp(settings?.handleHeightDp ?: 120) * density).toInt()
-    val isDrawerOpen get() = drawer != null
+    val handleHeightPx get() = (clampHandleHeightDp(settings?.handleHeightDp ?: DEFAULT_SETTINGS.handleHeightDp) * density).toInt()
+    /** Open and not closing: during the exit animation the handle is back and can reopen it. */
+    val isDrawerOpen get() = drawer != null && drawerState?.targetState == true
 
     fun showHandle(s: DrawerSettings) {
         settings = s
@@ -63,13 +66,21 @@ class OverlayHost(
             onOpen = onOpen,
             onDragMove = ::dragHandleTo,
             onDrop = ::dropHandle,
-        ).also { handle = it }
+        ).also {
+            handle = it
+            // Before Android 11 the navigation-bar size comes from this window's insets, which
+            // only arrive once it is attached: place the handle again when they do.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                it.setOnApplyWindowInsetsListener { v, insets -> replaceForInsets(); v.onApplyWindowInsets(insets) }
+            }
+        }
         val screen = screenSize()
         view.configure(s.side, s.handleColor, s.handleAlpha, screen.width)
         // While the handle is being dragged it follows the finger; a settings write or rotation
         // landing meanwhile must not snap it back to the stored spot.
         if (!view.isDragging) placeHandle(s, screen)
-        applyHandleVisibility()
+        // One window update for position, look and visibility together.
+        applyHandleVisibility(updateWindow = false)
         if (view in added) update(view, handleParams) else add(view, handleParams)
         if (!watching) {
             watching = true
@@ -102,7 +113,11 @@ class OverlayHost(
         onClosed: () -> Unit,
     ): Boolean {
         val s = settings ?: return false
-        if (drawer != null) return false
+        if (drawer != null) {
+            if (isDrawerOpen) return false
+            // Swiped again while it was closing: replace it rather than wait for the animation.
+            removeDrawer()
+        }
         val state = MutableTransitionState(false).apply { targetState = true }
         val owner = OverlayLifecycleOwner()
         val root = DrawerWindowView(context, onBack = ::closeDrawer)
@@ -142,16 +157,29 @@ class OverlayHost(
         drawerOwner = owner
         drawerState = state
         applyHandleVisibility()
-        add(root, overlayParams(0).apply {
+        val params = overlayParams(0).apply {
             width = WindowManager.LayoutParams.MATCH_PARENT
             height = WindowManager.LayoutParams.MATCH_PARENT
-        })
+        }
+        drawerParams = params
+        add(root, params)
         return root in added
     }
 
     /** Starts the exit animation; the window is removed when it finishes. */
     fun closeDrawer() {
-        drawerState?.targetState = false
+        val state = drawerState ?: return
+        state.targetState = false
+        // The handle comes back as the drawer starts to leave, so it can be swiped again at once;
+        // the leaving drawer (above it) stops taking touches and focus so the swipe reaches it.
+        val view = drawer
+        val params = drawerParams
+        if (view != null && params != null) {
+            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            update(view, params)
+        }
+        applyHandleVisibility()
     }
 
     fun removeAll() {
@@ -192,13 +220,14 @@ class OverlayHost(
         drawer = null
         drawerOwner = null
         drawerState = null
+        drawerParams = null
         applyHandleVisibility()
         closed?.invoke()
     }
 
-    private fun applyHandleVisibility() {
+    private fun applyHandleVisibility(updateWindow: Boolean = true) {
         val view = handle ?: return
-        val visible = !fullscreen && drawer == null
+        val visible = !fullscreen && !isDrawerOpen
         view.visibility = if (visible) View.VISIBLE else View.GONE
         // A hidden handle must not swallow touches meant for the app underneath.
         val flags = if (visible) {
@@ -208,8 +237,20 @@ class OverlayHost(
         }
         if (flags != handleParams.flags) {
             handleParams.flags = flags
-            if (view in added) update(view, handleParams)
+            if (updateWindow && view in added) update(view, handleParams)
         }
+    }
+
+    /** Re-places the handle with insets that arrived after it was added (before Android 11). */
+    private fun replaceForInsets() {
+        val view = handle ?: return
+        val s = settings ?: return
+        if (view.isDragging) return
+        val x = handleParams.x
+        val y = handleParams.y
+        placeHandle(s, screenSize())
+        // Only when it moved: the update itself can dispatch insets again.
+        if (handleParams.x != x || handleParams.y != y) update(view, handleParams)
     }
 
     private fun placeHandle(s: DrawerSettings, screen: Size) {

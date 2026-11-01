@@ -37,7 +37,6 @@ class MainActivity : ComponentActivity() {
         setContent {
             AppTheme {
                 val settings by vm.settings.collectAsStateWithLifecycle()
-                val allApps by vm.allApps.collectAsStateWithLifecycle()
                 var canDrawOverlays by remember { mutableStateOf(Settings.canDrawOverlays(this)) }
                 var notificationsGranted by remember { mutableStateOf(notificationsGranted()) }
                 var usageAccessGranted by remember { mutableStateOf(recents.hasAccess()) }
@@ -56,6 +55,8 @@ class MainActivity : ComponentActivity() {
                 val s = settings ?: return@AppTheme
                 if (picking) {
                     BackHandler { picking = false }
+                    // Collected only here, so every installed app is loaded only for the picker.
+                    val allApps by vm.allApps.collectAsStateWithLifecycle()
                     AppPickerScreen(
                         apps = allApps,
                         chosen = s.apps,
@@ -63,9 +64,8 @@ class MainActivity : ComponentActivity() {
                         onBack = { picking = false },
                     )
                 } else {
-                    val byKey = remember(allApps) { allApps.orEmpty().associateBy { it.key } }
-                    // Null until the app list has loaded, so settings doesn't flash "No apps chosen yet".
-                    val chosenApps = if (allApps == null) null else s.apps.mapNotNull { byKey[it] }
+                    // Null until loaded, so settings doesn't flash "No apps chosen yet".
+                    val chosenApps by vm.chosenApps.collectAsStateWithLifecycle()
                     SettingsScreen(
                         settings = s,
                         chosenApps = chosenApps,

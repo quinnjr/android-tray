@@ -83,6 +83,8 @@ class HandleView(
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        // A new touch always starts on the latest configuration, even if the last one never ended.
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) endTouch()
         val g = gesture ?: return false
         // Uptime, like postDelayed: the long-press runnable then never fires "early" for tick().
         val now = event.eventTime
