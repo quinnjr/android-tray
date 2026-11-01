@@ -62,8 +62,10 @@ class OverlayHost(
     /** Open and not closing: during the exit animation the handle is back and can reopen it. */
     val isDrawerOpen get() = drawer != null && drawerState?.targetState == true
 
+    /** Shows the handle as [s] says; the window is only updated if that moves or resizes it. */
     fun showHandle(s: DrawerSettings) {
         settings = s
+        val before = handleParams.layoutKey()
         val view = handle ?: HandleView(
             context,
             onOpen = onOpen,
@@ -85,7 +87,11 @@ class OverlayHost(
         if (!view.isDragging) { placeHandle(s, screen) }
         // One window update for position, look and visibility together.
         applyHandleVisibility(updateWindow = false)
-        if (view in added) { update(view, handleParams) } else { add(view, handleParams) }
+        if (view !in added) {
+            add(view, handleParams)
+        } else if (handleParams.layoutKey() != before) {
+            update(view, handleParams)
+        }
         if (!watching) {
             watching = true
             watcher.start()
@@ -106,7 +112,7 @@ class OverlayHost(
 
     /** Shows the drawer; false if it couldn't be (no settings yet, or one is already open). */
     fun openDrawer(
-        /** The pinned apps; null while they're still loading (the drawer shows meanwhile). */
+        /** The pinned apps; null while they're still loading, or if loading failed with nothing to show. */
         apps: State<List<LaunchableApp>?>,
         /** How current the apps shown are (shown as a hint; launching from them is still fine). */
         status: State<PinnedStatus>,
@@ -343,6 +349,9 @@ class OverlayHost(
         wm.addView(view, params)
         added += view
     }
+
+    /** What a window update would change about a window's placement and visibility. */
+    private fun WindowManager.LayoutParams.layoutKey() = listOf(x, y, width, height, gravity, flags, alpha)
 
     private fun update(view: View, params: WindowManager.LayoutParams) = guard {
         if (view in added) { wm.updateViewLayout(view, params) }

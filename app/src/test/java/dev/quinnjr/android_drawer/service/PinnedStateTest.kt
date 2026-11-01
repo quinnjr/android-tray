@@ -69,27 +69,19 @@ class PinnedStateTest {
     }
 
     @Test
-    fun `an incomplete load (some apps couldn't be listed) shows what it has, as current`() {
+    fun `an incomplete load with no earlier copy of the missing apps shows what it has, as failed`() {
         val partial = LoadedPinned(setOf(a, b), mapOf(a to "a/a.A"), unknown = setOf(b))
         val kept = null.keep(partial)!!
-        assertEquals(PinnedStatus.CURRENT, kept.status(setOf(a, b)))
+        assertEquals(PinnedStatus.FAILED, kept.status(setOf(a, b)))
         assertEquals(listOf("a/a.A"), kept.load.ordered(listOf(a, b)))
     }
 
     @Test
-    fun `apps that couldn't be listed this time keep their earlier copy`() {
+    fun `apps that couldn't be listed this time keep their earlier copy, as current`() {
         val good = null.keep(load(a, b, c))
         val partial = LoadedPinned(setOf(a, b, c), mapOf(a to "a/a.A", b to "b/b.B"), unknown = setOf(c))
         val kept = good.keep(partial)!!
         assertEquals(listOf("a/a.A", "b/b.B", "c/c.C"), kept.load.ordered(listOf(a, b, c)))
         assertEquals(PinnedStatus.CURRENT, kept.status(setOf(a, b, c)))
-    }
-
-    @Test
-    fun `a failure with a retry asked for since shows as reloading until that retry lands`() {
-        val failed = null.keep(load(a, b)).keep(load(a, b, failed = true))!!
-        assertEquals(PinnedStatus.RELOADING, failed.status(setOf(a, b), retryAsked = 1))
-        val retriedAndFailed = failed.keep(null).keep(LoadedPinned(setOf(a, b), null, retry = 1))!!
-        assertEquals(PinnedStatus.FAILED, retriedAndFailed.status(setOf(a, b), retryAsked = 1))
     }
 }

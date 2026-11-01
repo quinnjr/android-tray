@@ -113,7 +113,7 @@ private val LABEL_COLOR = Color.White
  */
 @Composable
 fun DrawerPanel(
-    /** The pinned apps; null while they're still loading. */
+    /** The pinned apps; null while they're still loading, or if loading failed with nothing to show. */
     apps: State<List<LaunchableApp>?>,
     /** How current the apps shown are: a reload under way, or a failed one, shows as a hint. */
     status: State<PinnedStatus>,
@@ -265,19 +265,21 @@ private fun Panel(
                     val pinned = apps.value
                     val current = status.value
                     when {
-                        // Nothing loaded yet (or only an empty list, while pinned apps are reloading;
-                        // with none pinned, "No apps yet" stays put through reloads).
-                        pinned == null || (pinned.isEmpty() && current == PinnedStatus.RELOADING && hasPinned.value) -> CircularProgressIndicator(
-                            color = LABEL_COLOR,
-                            modifier = Modifier.align(Alignment.Center).size(32.dp),
-                        )
-                        // Loading failed with nothing to show (not the same as unavailable apps).
-                        pinned.isEmpty() && current == PinnedStatus.FAILED && hasPinned.value -> Text(
+                        // Loading failed with nothing ever loaded to show (null). Not the same as a
+                        // list that loaded empty because the apps are unavailable (e.g. a paused
+                        // work profile): a failed reload of that still says they're unavailable.
+                        pinned == null && current == PinnedStatus.FAILED && hasPinned.value -> Text(
                             stringResource(R.string.pinned_load_failed),
                             color = LABEL_COLOR,
                             textAlign = TextAlign.Center,
                             style = MaterialTheme.typography.bodyMedium,
                             modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                        )
+                        // Nothing loaded yet (or only an empty list, while pinned apps are reloading;
+                        // with none pinned, "No apps yet" stays put through reloads).
+                        pinned == null || (pinned.isEmpty() && current == PinnedStatus.RELOADING && hasPinned.value) -> CircularProgressIndicator(
+                            color = LABEL_COLOR,
+                            modifier = Modifier.align(Alignment.Center).size(32.dp),
                         )
                         pinned.isEmpty() -> NoApps(hasPinned.value, onOpenSettings, Modifier.fillMaxSize())
                         else -> {
