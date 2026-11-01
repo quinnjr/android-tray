@@ -269,6 +269,14 @@ private fun Panel(
                             color = LABEL_COLOR,
                             modifier = Modifier.align(Alignment.Center).size(32.dp),
                         )
+                        // Loading failed with nothing to show (not the same as unavailable apps).
+                        pinned.isEmpty() && current == PinnedStatus.FAILED && hasPinned.value -> Text(
+                            "Couldn't load your pinned apps. Open the drawer again to retry.",
+                            color = LABEL_COLOR,
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                        )
                         pinned.isEmpty() -> NoApps(hasPinned.value, onOpenSettings, Modifier.fillMaxSize())
                         else -> {
                             // Stays composed while reloading (the last list is kept), so a press or
@@ -276,24 +284,19 @@ private fun Panel(
                             // out empty: then there's nothing left to drag). Taps launch at once: an
                             // app gone meanwhile isn't started and says so. The status shows as a hint.
                             PinnedGrid(pinned, iconsLocked, onLaunch, onReorder)
-                            when (current) {
-                                PinnedStatus.RELOADING -> CircularProgressIndicator(
+                            if (current == PinnedStatus.RELOADING) {
+                                CircularProgressIndicator(
                                     color = LABEL_COLOR,
                                     strokeWidth = 2.dp,
                                     modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).size(16.dp),
                                 )
-                                PinnedStatus.FAILED -> Text(
-                                    "Couldn't refresh",
-                                    color = LABEL_COLOR.copy(alpha = 0.6f),
-                                    fontSize = 11.sp,
-                                    modifier = Modifier.align(Alignment.BottomCenter).padding(4.dp),
-                                )
-                                PinnedStatus.CURRENT -> Unit
                             }
                         }
                     }
                 }
-                notice.value?.let { text ->
+                // Its own line below the grid (not over its last row): a message, else a failed refresh.
+                val failedRefresh = status.value == PinnedStatus.FAILED && !apps.value.isNullOrEmpty()
+                (notice.value ?: if (failedRefresh) { "Couldn't refresh" } else { null })?.let { text ->
                     Text(
                         text,
                         color = LABEL_COLOR,
@@ -387,9 +390,10 @@ private fun PinnedGrid(
         val from = current.indexOfFirst { it.key == key }
         // Wait for the grid to lay out the previous move before moving again.
         val laidOut = gridState.layoutInfo.visibleItemsInfo.any { it.index == from && it.key == key.encode() }
-        val target = appAt(pointer) ?: return
-        if (laidOut && target.index != from) {
-            drag.order = current.moved(from, target.index).map { it.key }
+        // By key, not index: the layout may still be a frame behind the list (e.g. after a reload).
+        val to = appAt(pointer)?.let { info -> current.indexOfFirst { it.key.encode() == info.key } } ?: return
+        if (laidOut && to >= 0 && to != from) {
+            drag.order = current.moved(from, to).map { it.key }
             drag.moved = true
         }
     }
@@ -414,7 +418,11 @@ private fun PinnedGrid(
     }
 
     if (draggedAppGone) {
-        SideEffect { finishDrag() }
+        // The rest of this gesture is still consumed (see below) until the finger lifts.
+        SideEffect {
+            finishDrag()
+            drag.abandoned = true
+        }
     }
 
     // While an app is lifted, keep scrolling each frame the finger rests near the top or bottom.
@@ -449,10 +457,22 @@ private fun PinnedGrid(
                     grab = start - info.offset.toOffset()
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 },
-                onDragEnd = ::finishDrag,
-                onDragCancel = ::finishDrag,
+                onDragEnd = {
+                    finishDrag()
+                    drag.abandoned = false
+                },
+                onDragCancel = {
+                    finishDrag()
+                    drag.abandoned = false
+                },
             ) { change, _ ->
-                if (drag.key == null) { return@detectDragGesturesAfterLongPress }
+                if (drag.key == null) {
+                    // A drag ended early (its app vanished): keep the gesture from scrolling the grid.
+                    if (drag.abandoned) {
+                        change.consume()
+                    }
+                    return@detectDragGesturesAfterLongPress
+                }
                 change.consume()
                 pointer = change.position
                 hasMoved = true
@@ -464,7 +484,7 @@ private fun PinnedGrid(
     LazyVerticalGrid(
         columns = GridCells.Fixed(COLUMNS),
         state = gridState,
-        userScrollEnabled = drag.key == null,
+        userScrollEnabled = drag.key == null && !drag.abandoned,
         // Plain padding, not contentPadding: the drag hit-testing compares the finger (in this
         // modifier's coordinates) with item offsets, which contentPadding would shift.
         modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = CELL_SPACING, bottom = 16.dp).then(reorder),
@@ -500,6 +520,8 @@ private class GridDrag {
     var order by mutableStateOf<List<AppKey>?>(null)
     /** Whether the user has moved anything (a long-press and release alone saves nothing). */
     var moved = false
+    /** The drag ended early (its app vanished) but the finger is still down. */
+    var abandoned by mutableStateOf(false)
     /**
      * The apps there when the drag began, in their order then: only their order is saved (one
      * pinned meanwhile keeps its place).

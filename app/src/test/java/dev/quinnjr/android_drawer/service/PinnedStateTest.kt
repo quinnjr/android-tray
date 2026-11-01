@@ -13,8 +13,8 @@ class PinnedStateTest {
     private val b = AppKey("b/b.B", 0L)
     private val c = AppKey("c/c.C", 0L)
 
-    private fun load(vararg keys: AppKey, failed: Boolean = false, retry: Int = 0) =
-        LoadedPinned(keys.toSet(), if (failed) null else keys.associateWith { it.component }, retry)
+    private fun load(vararg keys: AppKey, failed: Boolean = false) =
+        LoadedPinned(keys.toSet(), if (failed) null else keys.associateWith { it.component })
 
     @Test
     fun `nothing kept before the first load`() {
@@ -46,35 +46,30 @@ class PinnedStateTest {
 
     @Test
     fun `status is current for a load of exactly these keys`() {
-        assertEquals(PinnedStatus.CURRENT, null.keep(load(a, b))!!.status(setOf(a, b), retryRequested = 0))
+        assertEquals(PinnedStatus.CURRENT, null.keep(load(a, b))!!.status(setOf(a, b)))
     }
 
     @Test
     fun `a load for a different set means its reload is on the way`() {
-        assertEquals(PinnedStatus.RELOADING, null.keep(load(a, b))!!.status(setOf(a, b, c), retryRequested = 0))
+        assertEquals(PinnedStatus.RELOADING, null.keep(load(a, b))!!.status(setOf(a, b, c)))
     }
 
+
     @Test
-    fun `a failure shows as reloading once a retry has been asked for`() {
-        val failed = null.keep(load(a, failed = true))!!
-        assertEquals(PinnedStatus.FAILED, failed.status(setOf(a), retryRequested = 0))
-        assertEquals(PinnedStatus.RELOADING, failed.status(setOf(a), retryRequested = 1))
+    fun `a failure stays failed while kept, and a fresh failure with nothing kept is failed too`() {
+        val kept = null.keep(load(a, b)).keep(load(a, b, failed = true))!!
+        assertEquals(PinnedStatus.FAILED, kept.status(setOf(a, b)))
+        assertEquals(PinnedStatus.FAILED, null.keep(load(a, failed = true))!!.status(setOf(a)))
     }
 
     @Test
     fun `a load waits until the last app change has settled, whatever else triggers it`() {
-        val inputs = LoadInputs(setOf(a), changedAt = 1_000L, trigger = null)
+        val inputs = LoadInputs(setOf(a), changedAt = 1_000L)
         assertEquals(300L, inputs.settleDelay(now = 1_200L, settleMs = 500L))
         assertEquals(0L, inputs.settleDelay(now = 2_000L, settleMs = 500L))
-        assertEquals(0L, LoadInputs(setOf(a), changedAt = 0L, trigger = null).settleDelay(now = 100L, settleMs = 500L))
+        assertEquals(0L, LoadInputs(setOf(a), changedAt = 0L).settleDelay(now = 100L, settleMs = 500L))
     }
 
-    @Test
-    fun `a failed retry over a kept load counts as that retry, so it shows as failed`() {
-        val kept = null.keep(load(a, b)).keep(load(a, b, failed = true))
-        val retriedAndFailed = kept.keep(null).keep(load(a, b, failed = true, retry = 1))!!
-        assertEquals(PinnedStatus.FAILED, retriedAndFailed.status(setOf(a, b), retryRequested = 1))
-    }
 
     @Test
     fun `a failure kept through a change of the pinned set drops the apps unpinned since`() {
