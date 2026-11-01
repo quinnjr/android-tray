@@ -4,6 +4,9 @@ enum class Side { LEFT, RIGHT }
 
 /** Identifies a launcher activity in a specific user profile. */
 data class AppKey(val component: String, val userSerial: Long) {
+    /** The app's package name. */
+    val pkg: String get() = component.substringBefore('/')
+
     fun encode(): String = "$userSerial|$component"
 
     companion object {

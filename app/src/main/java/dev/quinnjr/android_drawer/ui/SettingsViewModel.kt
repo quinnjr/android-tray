@@ -58,10 +58,10 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         .mapLatest { config ->
             icons.use(config)
             // Taken before reading the apps, so an icon of an app that changes meanwhile isn't kept.
-            val generation = icons.generation()
+            val ticket = icons.begin()
             catalog.allApps(cached = { icons[it] }).map { app ->
                 currentCoroutineContext().ensureActive()
-                icons.draw(app, config.iconSizePx, generation)
+                icons.draw(app, ticket)
             }
         }
         .flowOn(Dispatchers.Default)

@@ -62,19 +62,22 @@ class AppCatalog(context: Context) {
     private val launcherApps = context.getSystemService(LauncherApps::class.java)
     private val userManager = context.getSystemService(UserManager::class.java)
 
-    /** Every launchable activity across available profiles, sorted by label. */
     /** Every launchable app, sorted by label; apps [cached] already has aren't loaded again. */
     fun allApps(cached: (AppKey) -> LaunchableApp? = { null }): List<LaunchableApp> = activities()
         .map { (key, info) -> cached(key) ?: info.toApp(key) }
         .sortedBy { it.label.lowercase() }
 
     /**
-     * The apps for [keys], in order; apps in a locked or paused profile are left out. Only the
-     * pinned packages are listed (not every installed app), and icons load only for these.
+     * The apps for [keys], in order; apps in a locked or paused profile are left out. Apps
+     * [cached] already has are used as they are; for the rest only their packages are listed (not
+     * every installed app), and icons load only for these.
      */
-    fun resolve(keys: List<AppKey>): List<LaunchableApp> {
-        val found = HashMap<AppKey, Pair<AppKey, LauncherActivityInfo>>()
-        val wanted = keys.groupBy { it.userSerial to it.component.substringBefore('/') }.mapValues { it.value.toHashSet() }
+    fun resolve(keys: List<AppKey>, cached: (AppKey) -> LaunchableApp? = { null }): List<LaunchableApp> {
+        val known = keys.mapNotNull { key -> cached(key)?.let { key to it } }.toMap()
+        val found = HashMap<AppKey, LauncherActivityInfo>()
+        val wanted = keys.filter { it !in known }
+            .groupBy { it.userSerial to it.pkg }
+            .mapValues { it.value.toHashSet() }
         for ((where, group) in wanted) {
             val (serial, pkg) = where
             val user = userManager.getUserForSerialNumber(serial) ?: continue
@@ -84,10 +87,10 @@ class AppCatalog(context: Context) {
                 .getOrDefault(emptyList())
                 .forEach { info ->
                     val key = AppKey(info.componentName.flattenToString(), serial)
-                    if (key in group) found[key] = key to info
+                    if (key in group) found[key] = info
                 }
         }
-        return keys.mapNotNull { found[it] }.map { (key, info) -> info.toApp(key) }
+        return keys.mapNotNull { key -> known[key] ?: found[key]?.toApp(key) }
     }
 
     /**
@@ -218,8 +221,8 @@ fun appChanges(
     .map { }
     .onStart { emit(Unit) }
 
-/** Whether [key] belongs to [pkg]. */
-fun AppKey.isIn(pkg: String): Boolean = component.startsWith("$pkg/")
+/** Whether this key belongs to [pkg]. */
+fun AppKey.isIn(pkg: String): Boolean = this.pkg == pkg
 
 /**
  * Emits whenever an app is installed, removed or changed in any profile (its package name), or

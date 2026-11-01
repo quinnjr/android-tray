@@ -20,8 +20,12 @@ data class DrawConfig(val iconSizePx: Int, val locales: String, val nightMode: I
 /**
  * Apps with their icons drawn, kept across loads. Emptied when the [DrawConfig] changes or an app
  * changes; values drawn from data read before such a change are never kept (see [IconCache]).
+ * Take a [Ticket] with [begin] before reading app data, and draw with it.
  */
 class DrawnAppCache(maxSize: Int = Int.MAX_VALUE) {
+    /** A generation and the icon size of the same config, taken together. */
+    class Ticket internal constructor(internal val generation: Int, internal val iconSizePx: Int)
+
     private val cache = IconCache<AppKey, LaunchableApp>(maxSize)
     private val lock = Any()
     private var config: DrawConfig? = null
@@ -34,14 +38,17 @@ class DrawnAppCache(maxSize: Int = Int.MAX_VALUE) {
         }
     }
 
-    fun generation(): Int = cache.generation()
+    /** Starts a load: call before reading the app data to draw. Needs a config set with [use]. */
+    fun begin(): Ticket = synchronized(lock) {
+        Ticket(cache.generation(), checkNotNull(config) { "No DrawConfig set" }.iconSizePx)
+    }
 
     operator fun get(key: AppKey): LaunchableApp? = cache[key]
 
-    /** [app] with its icon drawn at [sizePx], kept unless its data was invalidated since [generation]. */
-    fun draw(app: LaunchableApp, sizePx: Int, generation: Int): LaunchableApp {
+    /** [app] with its icon drawn, kept unless its data was invalidated since [ticket] was taken. */
+    fun draw(app: LaunchableApp, ticket: Ticket): LaunchableApp {
         if (app.bitmap != null) return app
-        return app.withBitmap(sizePx).also { cache.put(app.key, it, generation) }
+        return app.withBitmap(ticket.iconSizePx).also { cache.put(app.key, it, ticket.generation) }
     }
 
     /** One app changed ([pkg]), or several or a whole profile (null). */

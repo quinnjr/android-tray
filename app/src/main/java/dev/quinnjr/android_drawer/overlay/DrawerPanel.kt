@@ -107,6 +107,8 @@ fun DrawerPanel(
     recent: State<List<LaunchableApp>?>,
     /** Whether to show the recents section at all (usage access granted). */
     expectRecents: Boolean,
+    /** Whether any apps are pinned, even if none can be shown right now. */
+    hasPinned: Boolean,
     side: Side,
     visible: MutableTransitionState<Boolean>,
     iconsLocked: Boolean,
@@ -138,7 +140,7 @@ fun DrawerPanel(
                 enter = slideInHorizontally { if (fromRight) it else -it } + fadeIn(),
                 exit = slideOutHorizontally { if (fromRight) it else -it } + fadeOut(),
             ) {
-                Panel(apps, recent, expectRecents, fromRight, iconsLocked, onLaunch, onReorder, onOpenSettings, onDismiss)
+                Panel(apps, recent, expectRecents, hasPinned, fromRight, iconsLocked, onLaunch, onReorder, onOpenSettings, onDismiss)
             }
         }
     }
@@ -150,6 +152,8 @@ private fun Panel(
     recent: State<List<LaunchableApp>?>,
     /** Whether to show the recents section at all (usage access granted). */
     expectRecents: Boolean,
+    /** Whether any apps are pinned, even if none can be shown right now. */
+    hasPinned: Boolean,
     fromRight: Boolean,
     iconsLocked: Boolean,
     onLaunch: (LaunchableApp, Rect?) -> Unit,
@@ -206,7 +210,7 @@ private fun Panel(
                 if (recentRows > 0) RecentSection(recent.value?.take(recentRows * COLUMNS), recentRows, onLaunch)
                 Box(Modifier.weight(1f)) {
                     if (apps.isEmpty()) {
-                        NoApps(onOpenSettings, Modifier.fillMaxSize())
+                        NoApps(hasPinned, onOpenSettings, Modifier.fillMaxSize())
                     } else {
                         PinnedGrid(apps, iconsLocked, onLaunch, onReorder)
                     }
@@ -372,14 +376,23 @@ private fun PinnedGrid(
 }
 
 @Composable
-private fun NoApps(onOpenSettings: () -> Unit, modifier: Modifier) {
+private fun NoApps(hasPinned: Boolean, onOpenSettings: () -> Unit, modifier: Modifier) {
     Column(
         modifier.padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
     ) {
-        Text("No apps yet", style = MaterialTheme.typography.titleMedium)
-        Button(onClick = onOpenSettings) { Text("Add apps") }
+        if (hasPinned) {
+            // Pinned apps exist but none can be shown, e.g. they're all in a paused work profile.
+            Text(
+                "Your pinned apps aren't available right now",
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+            )
+        } else {
+            Text("No apps yet", style = MaterialTheme.typography.titleMedium)
+            Button(onClick = onOpenSettings) { Text("Add apps") }
+        }
     }
 }
 

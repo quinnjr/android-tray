@@ -89,8 +89,10 @@ class OverlayHost(
         applyHandleVisibility()
     }
 
+    /** Shows the drawer; false if it couldn't be (no settings yet, or one is already open). */
     fun openDrawer(
         apps: List<LaunchableApp>,
+        hasPinned: Boolean,
         recent: State<List<LaunchableApp>?>,
         expectRecents: Boolean,
         onLaunch: (LaunchableApp, Rect?) -> Unit,
@@ -98,9 +100,9 @@ class OverlayHost(
         onOpenSettings: () -> Unit,
         /** Called once the drawer has been removed. */
         onClosed: () -> Unit,
-    ) {
-        val s = settings ?: return
-        if (drawer != null) return
+    ): Boolean {
+        val s = settings ?: return false
+        if (drawer != null) return false
         val state = MutableTransitionState(false).apply { targetState = true }
         val owner = OverlayLifecycleOwner()
         val root = DrawerWindowView(context, onBack = ::closeDrawer)
@@ -111,6 +113,7 @@ class OverlayHost(
             DrawerPanel(
                 apps = apps,
                 recent = recent,
+                hasPinned = hasPinned,
                 expectRecents = expectRecents,
                 side = s.side,
                 visible = state,
@@ -143,10 +146,8 @@ class OverlayHost(
             width = WindowManager.LayoutParams.MATCH_PARENT
             height = WindowManager.LayoutParams.MATCH_PARENT
         })
+        return root in added
     }
-
-    /** Removes the drawer at once, without the exit animation (e.g. when the screen turns off). */
-    fun removeDrawerNow() = removeDrawer()
 
     /** Starts the exit animation; the window is removed when it finishes. */
     fun closeDrawer() {
@@ -182,7 +183,8 @@ class OverlayHost(
             ?: Rect()
     }
 
-    private fun removeDrawer() {
+    /** Removes the drawer at once, without the exit animation (e.g. when the screen turns off). */
+    fun removeDrawer() {
         val closed = drawerClosed
         drawerClosed = null
         drawer?.let(::remove)

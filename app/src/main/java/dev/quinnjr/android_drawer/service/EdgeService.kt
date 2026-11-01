@@ -33,33 +33,26 @@ import dev.quinnjr.android_drawer.apps.DrawnAppCache
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.apps.RecentApps
 import dev.quinnjr.android_drawer.apps.appChanges
-import dev.quinnjr.android_drawer.apps.withBitmap
 import dev.quinnjr.android_drawer.overlay.DRAWER_ICON_SIZE
 import dev.quinnjr.android_drawer.overlay.OverlayHost
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.withVisibleOrder
 import dev.quinnjr.android_drawer.ui.MainActivity
-import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.mapLatest
-import kotlinx.coroutines.flow.onEach
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 
-@OptIn(ExperimentalCoroutinesApi::class)
 class EdgeService : LifecycleService() {
     private lateinit var repo: SettingsRepository
     private lateinit var host: OverlayHost
@@ -69,16 +62,12 @@ class EdgeService : LifecycleService() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
-     * Pinned apps resolved ahead of time, icons already drawn, by key; null until the first resolve.
-     * The order always comes from settings when the drawer opens, so it can never be stale.
+     * Pinned apps with icons drawn, kept warm in the background so the drawer opens instantly.
+     * Their order always comes from settings when the drawer opens, so it can never be stale.
      */
-    private val resolved = MutableStateFlow<Map<AppKey, LaunchableApp>?>(null)
-    /** Pinned keys the last resolve couldn't find (e.g. a paused work profile's apps). */
-    private var unresolvable: Set<AppKey> = emptySet()
-    private var unresolvableSince = 0L
-    /** What app labels and icons depend on; they're reloaded when it changes. */
+    private val pinnedIcons = DrawnAppCache(MAX_PINNED_ICONS)
+    /** What app labels and icons depend on; the caches are re-warmed when it changes. */
     private val displayConfig = MutableStateFlow<DrawConfig?>(null)
-    private var opening = false
     private var recentJob: Job? = null
     /** The drawer being prepared (resolving pinned apps) before it is shown. */
     private var openJob: Job? = null
@@ -86,8 +75,6 @@ class EdgeService : LifecycleService() {
     private val recentIcons = DrawnAppCache(MAX_RECENT_ICONS)
     /** Packages of pinned apps: changes to other apps don't need the pinned apps re-resolved. */
     @Volatile private var pinnedPackages: Set<String> = emptySet()
-    /** True while the background resolve is working on a newer set of pinned apps. */
-    private val resolving = MutableStateFlow(false)
     private var foreground = false
     /** Started through startForegroundService(), so startForeground() is mandatory. */
     private var foregroundRequired = false
@@ -96,7 +83,7 @@ class EdgeService : LifecycleService() {
     private val appOps by lazy { getSystemService(AppOpsManager::class.java) }
     private val overlayPermissionListener = AppOpsManager.OnOpChangedListener { _, pkg ->
         // Revoking "Display over other apps" doesn't kill us; the windows just vanish.
-        if (pkg == packageName) mainHandler.post { if (!Settings.canDrawOverlays(this)) stopSelf() }
+        if (pkg == packageName) mainHandler.post { if (!Settings.canDrawOverlays(this)) stop() }
     }
 
     /**
@@ -110,7 +97,7 @@ class EdgeService : LifecycleService() {
             // A drawer still being prepared must not appear after this.
             openJob?.cancel()
             // With the screen off no frames run, so an exit animation would only play on unlock.
-            if (intent.action == Intent.ACTION_SCREEN_OFF) host.removeDrawerNow() else host.closeDrawer()
+            if (intent.action == Intent.ACTION_SCREEN_OFF) host.removeDrawer() else host.closeDrawer()
         }
     }
 
@@ -136,20 +123,19 @@ class EdgeService : LifecycleService() {
             onHandleDropped = { side, fraction ->
                 lifecycleScope.launch { repo.update { it.copy(side = side, yFraction = fraction) } }
             },
-            onFatal = ::stopSelf,
+            onFatal = ::stop,
         )
         if (overlayContext !== this) overlayContext.registerComponentCallbacks(configCallbacks)
-        displayConfig.value = DrawConfig.of(overlayContext.resources.configuration, DRAWER_ICON_SIZE)
-            .also(recentIcons::use)
+        useDrawConfig(DrawConfig.of(overlayContext.resources.configuration, DRAWER_ICON_SIZE))
         appOps.startWatchingMode(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, packageName, overlayPermissionListener)
         @Suppress("DEPRECATION") // Still delivered for Home/Recents; only sending it is restricted.
         val closeActions = IntentFilter(Intent.ACTION_SCREEN_OFF).apply { addAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS) }
         ContextCompat.registerReceiver(this, closeDrawerReceiver, closeActions, ContextCompat.RECEIVER_NOT_EXPORTED)
         lifecycleScope.launch {
             repo.settings.collect { s ->
-                pinnedPackages = s.apps.mapTo(HashSet()) { it.component.substringBefore('/') }
+                pinnedPackages = s.apps.mapTo(HashSet()) { it.pkg }
                 if (!s.enabled || !Settings.canDrawOverlays(this@EdgeService)) {
-                    stopSelf()
+                    stop()
                 } else {
                     host.showHandle(s)
                     if (!foreground && !retryScheduled) {
@@ -160,136 +146,97 @@ class EdgeService : LifecycleService() {
                             // Only a plain (sticky-restart) start can get here: for one through
                             // startForegroundService() the system already allowed the foreground
                             // start, and stopping before startForeground() would crash the app.
-                            if (!foreground && !foregroundRequired) stopSelf()
+                            if (!foreground && !foregroundRequired) stop()
                         }, FOREGROUND_RETRY_MS)
                     }
                 }
             }
         }
-        // Resolve icons off the main thread ahead of time so the drawer opens instantly. Keyed by
-        // the set of pinned apps: reordering needs no new resolve.
+        // Keep the pinned apps' icons drawn ahead of time, off the main thread, so the drawer opens
+        // instantly: whenever the pinned set, one of those apps or the display config changes.
         lifecycleScope.launch {
             combine(
-                repo.settings.map { it.apps.toSet() }.distinctUntilChanged(),
-                // Any app change invalidates the cached launcher entries and that app's recent icon;
-                // only changes to pinned apps (or to many/all at once) re-resolve the pinned apps.
+                repo.settings.map { it.apps }.distinctUntilChanged(),
+                // Any app change invalidates the cached launcher entries and that app's icons;
+                // only changes to pinned apps (or to many/all at once) re-warm the pinned apps.
                 appChanges(
                     this@EdgeService,
                     relevant = { pkg -> pkg == null || pkg in pinnedPackages },
                     onChange = { pkg ->
                         catalog.invalidate()
+                        pinnedIcons.onAppChanged(pkg)
                         recentIcons.onAppChanged(pkg)
                     },
                 ),
-                displayConfig,
+                displayConfig.filterNotNull(),
             ) { keys, _, _ -> keys }
-                .onEach { resolving.value = true }
-                .mapLatest { keys -> keys to resolveWithIcons(keys.toList()) }
-                .collect { (keys, apps) ->
-                    resolving.value = false
-                    if (apps == null) {
-                        // Failed: keep what we had; with nothing yet, let the drawer resolve on open.
-                        if (resolved.value == null) resolved.value = emptyMap()
-                        return@collect
-                    }
-                    val byKey = apps.associateBy { it.key }
-                    unresolvable = keys - byKey.keys
-                    unresolvableSince = SystemClock.elapsedRealtime()
-                    resolved.value = byKey
-                }
+                .collectLatest { keys -> pinnedApps(keys) }
         }
     }
 
     private fun openDrawer() {
         // Further swipes while the drawer is being prepared would only redo the same work.
-        if (opening || host.isDrawerOpen) return
-        opening = true
+        if (openJob?.isActive == true || host.isDrawerOpen) return
         // Recents depend on what was just used, so they're read on every open and fill in when
         // ready; until then the drawer keeps their space if it expects any.
         val expectRecents = recents.hasAccess()
         val recent = mutableStateOf<List<LaunchableApp>?>(null)
         openJob = lifecycleScope.launch {
-            val keys: List<AppKey>
-            try {
-                keys = repo.settings.first().apps
-                host.openDrawer(
-                    apps = pinnedApps(keys),
-                    recent = recent,
-                    expectRecents = expectRecents,
-                    onLaunch = { app, bounds -> catalog.launch(app, bounds) },
-                    onReorder = { shownOrder ->
-                        lifecycleScope.launch { repo.update { it.copy(apps = it.apps.withVisibleOrder(shownOrder)) } }
-                    },
-                    onOpenSettings = {
-                        startActivity(Intent(this@EdgeService, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    },
-                    // Nobody will see the recents of a closed drawer.
-                    onClosed = { recentJob?.cancel() },
-                )
-            } finally {
-                opening = false
-            }
+            val keys = repo.settings.first().apps
+            val shown = host.openDrawer(
+                apps = pinnedApps(keys),
+                hasPinned = keys.isNotEmpty(),
+                recent = recent,
+                expectRecents = expectRecents,
+                onLaunch = { app, bounds -> catalog.launch(app, bounds) },
+                onReorder = { shownOrder ->
+                    lifecycleScope.launch { repo.update { it.copy(apps = it.apps.withVisibleOrder(shownOrder)) } }
+                },
+                onOpenSettings = {
+                    startActivity(Intent(this@EdgeService, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                },
+                // Nobody will see the recents of a closed drawer.
+                onClosed = { recentJob?.cancel() },
+            )
             recentJob?.cancel()
-            if (!expectRecents) return@launch
-            recentJob = lifecycleScope.launch {
-                recent.value = withContext(Dispatchers.Default) {
-                    val start = SystemClock.elapsedRealtime()
-                    // Taken before anything is read, so icons read before a clear are never stored after it.
-                    val generation = recentIcons.generation()
-                    try {
-                        catalog.recent(keys, recents, cached = { recentIcons[it] })
-                            .map { ensureActive(); recentIcons.draw(it, iconSizePx(), generation) }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Could not read recent apps", e)
-                        emptyList()
-                    }.also { Log.d(TAG, "Recent apps read in ${SystemClock.elapsedRealtime() - start} ms") }
-                }
-            }
+            if (!shown || !expectRecents) return@launch
+            recentJob = lifecycleScope.launch { recent.value = recentApps(keys) }
         }
     }
 
-    /**
-     * [keys] in order, from the cache (waiting for the first background resolve if needed); any
-     * it hasn't resolved yet (e.g. just pinned) are resolved now.
-     */
-    private suspend fun pinnedApps(keys: List<AppKey>): List<LaunchableApp> {
-        // A background resolve of newly pinned apps is likely almost done: wait for it (briefly)
-        // rather than resolving the same apps a second time.
-        withTimeoutOrNull(RESOLVE_WAIT_MS) { resolving.first { !it } }
-        val cache = resolved.filterNotNull().first()
-        // Keys that couldn't be resolved (e.g. a paused work profile) are retried now and then,
-        // in case the event that should have brought them back was missed or raced.
-        val retry = SystemClock.elapsedRealtime() - unresolvableSince > UNRESOLVABLE_RETRY_MS
-        val missing = keys.filter { it !in cache && (retry || it !in unresolvable) }
-        if (missing.isEmpty()) return keys.mapNotNull { cache[it] }
-        val fresh = resolveWithIcons(missing).orEmpty().associateBy { it.key }
-        if (retry) {
-            unresolvable = unresolvable - fresh.keys
-            unresolvableSince = SystemClock.elapsedRealtime()
+    /** The pinned apps for [keys], in order, with icons; drawn icons come from the cache. */
+    private suspend fun pinnedApps(keys: List<AppKey>): List<LaunchableApp> = withContext(Dispatchers.Default) {
+        val ticket = pinnedIcons.begin()
+        loadSafely("pinned apps") {
+            catalog.resolve(keys, cached = { pinnedIcons[it] }).map { ensureActive(); pinnedIcons.draw(it, ticket) }
         }
-        // Keep what was just resolved, so the next open doesn't resolve it again; anything the
-        // background resolve published meanwhile is newer and wins.
-        if (fresh.isNotEmpty()) resolved.update { current -> fresh + current.orEmpty() }
-        return keys.mapNotNull { cache[it] ?: fresh[it] }
+    }
+
+    private suspend fun recentApps(pinned: List<AppKey>): List<LaunchableApp> = withContext(Dispatchers.Default) {
+        val start = SystemClock.elapsedRealtime()
+        val ticket = recentIcons.begin()
+        loadSafely("recent apps") {
+            catalog.recent(pinned, recents, cached = { recentIcons[it] }).map { ensureActive(); recentIcons.draw(it, ticket) }
+        }.also { Log.d(TAG, "Recent apps read in ${SystemClock.elapsedRealtime() - start} ms") }
+    }
+
+    /** Runs [load]; a failure (e.g. a profile removed meanwhile) is logged and gives no apps rather than a crash. */
+    private inline fun loadSafely(what: String, load: () -> List<LaunchableApp>): List<LaunchableApp> = try {
+        load()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "Could not load $what", e)
+        emptyList()
     }
 
     /**
-     * Resolves [keys] with icons drawn, off the main thread. A failure (e.g. a profile removed
-     * mid-resolve) is logged and gives null rather than crashing the service.
+     * Stops the service. One started through startForegroundService() must have gone foreground
+     * first, or the system crashes the app, so that is (re)tried before stopping.
      */
-    private suspend fun resolveWithIcons(keys: List<AppKey>): List<LaunchableApp>? = withContext(Dispatchers.Default) {
-        try {
-            val px = iconSizePx()
-            // Check for cancellation between icons, so a superseded resolve stops early.
-            catalog.resolve(keys).map { ensureActive(); it.withBitmap(px) }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "Could not resolve pinned apps", e)
-            null
-        }
+    private fun stop() {
+        if (foregroundRequired && !foreground) foreground = tryStartForeground()
+        stopSelf()
     }
 
     /**
@@ -298,13 +245,14 @@ class EdgeService : LifecycleService() {
      */
     private fun onDisplayChanged(newConfig: Configuration) {
         host.relayout()
-        val config = DrawConfig.of(newConfig, DRAWER_ICON_SIZE)
+        useDrawConfig(DrawConfig.of(newConfig, DRAWER_ICON_SIZE))
+    }
+
+    private fun useDrawConfig(config: DrawConfig) {
+        pinnedIcons.use(config)
         recentIcons.use(config)
         displayConfig.value = config
     }
-
-    private fun iconSizePx(): Int = displayConfig.value?.iconSizePx
-        ?: (DRAWER_ICON_SIZE.value * overlayContext.resources.displayMetrics.density).roundToInt()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.getBooleanExtra(EXTRA_FOREGROUND_REQUIRED, false) == true) {
@@ -371,8 +319,7 @@ class EdgeService : LifecycleService() {
         private const val NOTIFICATION_ID = 1
         private const val FOREGROUND_RETRY_MS = 500L
         private const val MAX_RECENT_ICONS = 32
-        private const val UNRESOLVABLE_RETRY_MS = 30_000L
-        private const val RESOLVE_WAIT_MS = 1_000L
+        private const val MAX_PINNED_ICONS = 64
         private const val EXTRA_CLOSE_REASON = "reason"
 
         private const val EXTRA_FOREGROUND_REQUIRED = "foreground_required"
