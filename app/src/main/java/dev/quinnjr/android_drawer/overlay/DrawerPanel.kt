@@ -408,17 +408,24 @@ private fun PinnedGrid(
     /**
      * Ends the drag, saving the order if the user moved anything: on release, and also when the
      * system cancels the gesture (shade pulled, Home, screen off), so a rearrangement isn't lost.
-     * Built from the drag state itself (not the last frame), and only the apps that were being
-     * dragged among: one pinned meanwhile keeps the place it was given.
+     * A drag moves one app (the lifted one), so that's what is saved: moved to where it was let
+     * go, among the apps that were being dragged among, in the order they're in now. Anything
+     * else that changed meanwhile (an earlier reorder undone because it couldn't be saved, an app
+     * pinned since) is kept as it is now, never overwritten by the order the drag started from.
      */
     fun finishDrag() {
+        val key = drag.key
         val keys = drag.order
-        if (drag.key != null && keys != null) {
+        if (key != null && keys != null) {
             val members = drag.start.toSet()
-            val chosen = currentLatest.arrangedBy(keys) { it.key }.map { it.key }.filter { it in members }
-            // Not moved, or moved back: nothing to save.
-            if (chosen != drag.start.filter { it in chosen }) {
-                currentOnReorder(chosen)
+            val now = currentLatest.map { it.key }.filter { it in members }
+            if (key in now) {
+                val target = keys.filter { it in now }.indexOf(key)
+                val chosen = (now - key).toMutableList().apply { add(target, key) }
+                // Not moved, or moved back: nothing to save.
+                if (chosen != now) {
+                    currentOnReorder(chosen)
+                }
             }
         }
         drag.clear()

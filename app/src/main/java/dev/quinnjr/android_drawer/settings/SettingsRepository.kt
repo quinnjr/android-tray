@@ -142,8 +142,10 @@ class SettingsRepository private constructor(context: Context) {
      * result says whether this change reached the disk. Each save writes the latest settings, so
      * saves finishing out of order never leave an older value on disk. If saving fails, memory goes
      * back to what is on disk (every unsaved change is undone). The change is [sanitized] first.
-     * Saves complete even if the caller goes away, and [onResult] (if given) is told the outcome
-     * then, on a background thread, even if its caller's scope is gone by then. True at once if
+     * Saves complete even if the caller goes away. [onResult] (if given) is told the outcome once
+     * known, even if its caller's scope is gone by then: on a background thread after a save, or
+     * straight away (on the caller's thread, before change() returns) if there's nothing to save
+     * or the settings haven't been read. Never under the repository's lock. True at once if
      * nothing changes; false at once if the settings haven't been read.
      */
     fun change(
@@ -180,40 +182,38 @@ class SettingsRepository private constructor(context: Context) {
 
     /** Saves the latest settings unless change [mine] is already on disk or undone (under [writeLock]). */
     private suspend fun save(mine: Long): Boolean {
-        while (true) {
-            val (next, nextVersion) = synchronized(stateLock) {
-                // Undone after a save failed, or already written by a later change's save (which
-                // wrote this one too). In that order: an undo also brings the disk version up.
-                if (undoneThrough >= mine) {
-                    return false
-                }
-                if (onDiskVersion >= mine) {
-                    return true
-                }
-                checkNotNull(current.value).settings to version
-            }
-            try {
-                store.edit { prefs -> write(prefs, next) }
-                synchronized(stateLock) {
-                    onDisk = next
-                    onDiskVersion = nextVersion
-                }
-                return true
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Could not save settings", e)
-                // Not retried (with a full disk, say, it would only fail again): back to what's on
-                // disk, undoing every change not saved yet, including any made meanwhile (their
-                // own saves then report failure without trying).
-                synchronized(stateLock) {
-                    show(checkNotNull(onDisk), undo = true)
-                    undoneThrough = version
-                    // Memory matches the disk again: nothing pending.
-                    onDiskVersion = version
-                }
+        val (next, nextVersion) = synchronized(stateLock) {
+            // Undone after a save failed, or already written by a later change's save (which
+            // wrote this one too). In that order: an undo also brings the disk version up.
+            if (undoneThrough >= mine) {
                 return false
             }
+            if (onDiskVersion >= mine) {
+                return true
+            }
+            checkNotNull(current.value).settings to version
+        }
+        try {
+            store.edit { prefs -> write(prefs, next) }
+            synchronized(stateLock) {
+                onDisk = next
+                onDiskVersion = nextVersion
+            }
+            return true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not save settings", e)
+            // Not retried (with a full disk, say, it would only fail again): back to what's on
+            // disk, undoing every change not saved yet, including any made meanwhile (their
+            // own saves then report failure without trying).
+            synchronized(stateLock) {
+                show(checkNotNull(onDisk), undo = true)
+                undoneThrough = version
+                // Memory matches the disk again: nothing pending.
+                onDiskVersion = version
+            }
+            return false
         }
     }
 

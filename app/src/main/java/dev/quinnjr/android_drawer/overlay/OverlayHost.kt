@@ -45,8 +45,6 @@ class OverlayHost(
         .apply { gravity = Gravity.TOP or Gravity.START }
     /** Scratch copy of [handleParams], reused: to tell whether showHandle() changed them. */
     private val handleParamsBefore = WindowManager.LayoutParams()
-    /** The last update of the handle's window failed, so it may not match [handleParams]. */
-    private var handleStale = false
 
     private var drawer: DrawerWindowView? = null
     private var drawerOwner: OverlayLifecycleOwner? = null
@@ -93,7 +91,7 @@ class OverlayHost(
         applyHandleVisibility(updateWindow = false)
         if (view !in added) {
             add(view, handleParams)
-        } else if (handleParamsBefore.copyFrom(handleParams) != 0 || handleStale) {
+        } else if (handleParamsBefore.copyFrom(handleParams) != 0) {
             // copyFrom() reports which of the window's attributes differ (any at all, so a field
             // set elsewhere later is covered too), without allocating.
             update(view, handleParams)
@@ -196,8 +194,7 @@ class OverlayHost(
             height = WindowManager.LayoutParams.MATCH_PARENT
         }
         drawerParams = params
-        add(root, params)
-        if (root !in added) {
+        if (!add(root, params)) {
             // The window couldn't be added: undo the rest, so the handle comes back and the drawer
             // can be opened again.
             removeDrawer()
@@ -357,12 +354,8 @@ class OverlayHost(
     }
 
     private fun update(view: View, params: WindowManager.LayoutParams) {
-        val ok = guard {
+        guard {
             if (view in added) { wm.updateViewLayout(view, params) }
-        }
-        // A failed handle update is sent again by the next showHandle(), changed or not.
-        if (view === handle) {
-            handleStale = !ok
         }
     }
 

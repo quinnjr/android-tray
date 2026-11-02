@@ -109,5 +109,4 @@ internal fun <T, K> List<T>.arrangedBy(order: List<K>, key: (T) -> K): List<T> {
     return order.mapNotNull(byKey::get) + filter { key(it) !in inOrder }
 }
 
-/** The values for the keys in [order], in that order; keys without a value are skipped (others dropped). */
 

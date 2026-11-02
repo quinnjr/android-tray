@@ -102,6 +102,17 @@ class EdgeService : LifecycleService() {
      * one while reloading or after a failure (see keep()).
      */
     private data class Pinned(val keys: List<AppKey>, val kept: KeptLoad<LaunchableApp>) {
+        /** Some apps are shown without an icon (it couldn't be drawn: see AppCatalog.resolve()). */
+        val hasBlankIcons: Boolean get() = kept.load.apps?.values?.any { it.bitmap == null } == true
+
+        /**
+         * These apps in the saved order; null if nothing was loaded for them (loading failed, or
+         * only a load for an earlier set is kept and it has none of these), as opposed to a load
+         * that found them all unavailable (an empty list).
+         */
+        val shown: List<LaunchableApp>? get() = kept.load.ordered(keys)
+            ?.takeUnless { it.isEmpty() && !kept.load.keys.containsAll(keys) }
+
         /** How current these are (the one place it's worked out). */
         val status: PinnedStatus by lazy { kept.status(keys.toSet()) }
     }
@@ -280,11 +291,17 @@ class EdgeService : LifecycleService() {
      * apps unpinned since. The status reflects the current keys, so it never shows a load for
      * another set as current. Null until the first load.
      */
-    private fun currentPinned(): Pinned? = kept.value?.let { k -> pinnedKeys.value?.let { Pinned(it, k) } }
+    private fun currentPinned(): Pinned? = pinnedOf(pinnedKeys.value, kept.value)
 
-    /** [currentPinned] as it changes. */
+    private fun pinnedOf(keys: List<AppKey>?, k: KeptLoad<LaunchableApp>?): Pinned? = k?.let { keys?.let { Pinned(it, k) } }
+
+    /**
+     * [currentPinned] as it changes. Cold, so each drawer's first value is worked out when it
+     * starts collecting (a shared StateFlow could still hold one from before a retry marked
+     * just now, and would show that over it).
+     */
     private val pinned: Flow<Pinned?> by lazy {
-        combine(pinnedKeys.filterNotNull(), kept) { order, k -> k?.let { Pinned(order, it) } }.distinctUntilChanged()
+        combine(pinnedKeys, kept, ::pinnedOf).distinctUntilChanged()
     }
 
     private fun openDrawer() {
@@ -298,7 +315,9 @@ class EdgeService : LifecycleService() {
         // A failed load is retried whenever someone opens the drawer (e.g. LauncherApps wasn't
         // ready right after boot). (Not while a load is already running: that would only restart
         // it.) It shows as reloading at once, in this drawer's first frame (see retryPinned()).
-        if (currentPinned()?.status == PinnedStatus.FAILED) {
+        // So is one with apps whose icons couldn't be drawn (shown blank meanwhile).
+        val atOpen = currentPinned()
+        if (atOpen?.status == PinnedStatus.FAILED || atOpen?.hasBlankIcons == true) {
             retryPinned()
         }
         // Recents depend on what was just used, so they're read on every open and fill in when
@@ -342,7 +361,7 @@ class EdgeService : LifecycleService() {
         host.openDrawer(
             // The loaded apps in the settings' current order (also over a list kept from before the
             // pinned set changed: apps unpinned since are left out, ones not loaded yet come later).
-            apps = derivedStateOf { shownPinned.value?.let { p -> p.kept.load.ordered(order.value) } },
+            apps = derivedStateOf { shownPinned.value?.copy(keys = order.value)?.shown },
             status = derivedStateOf { shownPinned.value?.status ?: PinnedStatus.RELOADING },
             hasPinned = derivedStateOf { order.value.isNotEmpty() },
             notice = notice,

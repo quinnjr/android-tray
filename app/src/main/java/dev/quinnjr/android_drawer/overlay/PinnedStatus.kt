@@ -28,16 +28,15 @@ sealed interface PinnedView<out T> {
 }
 
 /**
- * What to show for the pinned [apps] (null: nothing loaded, or loading failed with nothing to
- * show) at [status], given whether any apps are pinned. A list that loaded empty because the apps
- * are unavailable (e.g. a paused work profile) still says so after a failed reload; with none
- * pinned, "no apps" stays put through reloads and failures alike.
+ * What to show for the pinned [apps] (null: nothing loaded for them yet, or loading failed with
+ * nothing to show) at [status], given whether any apps are pinned. A list that loaded empty
+ * because the apps are unavailable (e.g. a paused work profile) keeps saying so through reloads
+ * and failed reloads; with none pinned, "no apps" stays put through reloads and failures alike.
  */
 fun <T> pinnedView(apps: List<T>?, status: PinnedStatus, hasPinned: Boolean): PinnedView<T> = when {
     !hasPinned && (apps != null || status != PinnedStatus.RELOADING) -> PinnedView.NoApps(hasPinned = false)
     apps == null && status == PinnedStatus.FAILED -> PinnedView.LoadFailed
     apps == null -> PinnedView.Loading
-    apps.isEmpty() && status == PinnedStatus.RELOADING -> PinnedView.Loading
     apps.isEmpty() -> PinnedView.NoApps(hasPinned = true)
     else -> PinnedView.Grid(apps, reloading = status == PinnedStatus.RELOADING, failed = status == PinnedStatus.FAILED)
 }

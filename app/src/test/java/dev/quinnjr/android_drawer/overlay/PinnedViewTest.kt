@@ -19,8 +19,8 @@ class PinnedViewTest {
     }
 
     @Test
-    fun `an empty list while reloading is loading, unless none are pinned`() {
-        assertEquals(PinnedView.Loading, pinnedView(emptyList<String>(), PinnedStatus.RELOADING, hasPinned = true))
+    fun `an empty list of unavailable apps keeps saying so while reloading`() {
+        assertEquals(PinnedView.NoApps(hasPinned = true), pinnedView(emptyList<String>(), PinnedStatus.RELOADING, hasPinned = true))
         assertEquals(PinnedView.NoApps(hasPinned = false), pinnedView(emptyList<String>(), PinnedStatus.RELOADING, hasPinned = false))
     }
 
