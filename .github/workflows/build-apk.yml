@@ -1,0 +1,136 @@
+name: Build APK
+
+on:
+  # Run by hand from the Actions tab ("Run workflow"), on any branch.
+  workflow_dispatch:
+  push:
+    branches: [main, develop]
+    # A version tag (e.g. v0.1.0) also publishes the signed release APK as a GitHub release.
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # The runner's Android SDK has its licenses accepted, so AGP downloads any missing
+      # platform (e.g. compileSdk 37) itself.
+      - name: Build debug APK and run unit tests and lint
+        run: ./gradlew assembleDebug testDebugUnitTest lintDebug --console=plain
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+
+      - name: Name the APK
+        id: apk
+        run: |
+          version=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          name="edge-drawer-${version}-${GITHUB_SHA::7}-debug"
+          mv app/build/outputs/apk/debug/app-debug.apk "$name.apk"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.name }}.apk
+          if-no-files-found: error
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ github.run_number }}
+          path: |
+            app/build/reports/lint-results-debug.html
+            app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore
+
+  # The production build: shrunk (R8) and signed with the release key from repository secrets.
+  # Runs for main, version tags and manual runs (not for pull requests, which can't read secrets).
+  release:
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # to publish a GitHub release for a version tag
+    env:
+      RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+      RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+      RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+      RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+      VERSION_CODE: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the signing secrets
+        run: |
+          for name in RELEASE_KEYSTORE_BASE64 RELEASE_KEYSTORE_PASSWORD RELEASE_KEY_ALIAS RELEASE_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository secret $name is not set; the release build can't be signed."
+              exit 1
+            fi
+          done
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore the release keystore
+        run: |
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          echo "RELEASE_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      - name: Build the signed release APK and bundle
+        run: ./gradlew assembleRelease bundleRelease --console=plain
+
+      - name: Name the outputs
+        id: out
+        run: |
+          version=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          name="edge-drawer-${version}-${GITHUB_SHA::7}"
+          mv app/build/outputs/apk/release/app-release.apk "$name.apk"
+          mv app/build/outputs/bundle/release/app-release.aab "$name.aab"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the release APK and bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.out.outputs.name }}-release
+          path: |
+            ${{ steps.out.outputs.name }}.apk
+            ${{ steps.out.outputs.name }}.aab
+          if-no-files-found: error
+
+      - name: Publish a GitHub release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "${{ steps.out.outputs.name }}.apk" --title "$GITHUB_REF_NAME" --generate-notes
+
+      - name: Remove the keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
