@@ -1,0 +1,46 @@
+<resources>
+    <string name="app_name">Edge Drawer</string>
+    <string name="channel_name">Edge handle</string>
+    <string name="notification_title">Edge handle is active</string>
+    <string name="app_unavailable">%1$s isn\'t available</string>
+    <string name="pinned_load_failed">Couldn\'t load your pinned apps. Open the drawer again to retry.</string>
+    <string name="pinned_refresh_failed">Couldn\'t refresh</string>
+    <string name="drawer_settings">Edge Drawer settings</string>
+    <string name="no_recent_apps">No recent apps</string>
+    <string name="pinned_unavailable">Your pinned apps aren\'t available right now</string>
+    <string name="no_apps_yet">No apps yet</string>
+    <string name="add_apps">Add apps</string>
+    <string name="settings_save_failed">Couldn\'t save your settings</string>
+    <string name="grant_overlay_title">Allow display over other apps</string>
+    <string name="grant_overlay_text">Needed to show the edge handle on top of every app.</string>
+    <string name="grant_notifications_title">Allow notifications</string>
+    <string name="grant_notifications_text">Android shows a small notification while the handle is running.</string>
+    <string name="grant_usage_title">Allow usage access to show recent apps</string>
+    <string name="show_handle">Show edge handle</string>
+    <string name="show_handle_text">Swipe it to open the drawer. Long-press and drag to move it.</string>
+    <string name="section_drawer_apps">Drawer apps</string>
+    <string name="no_apps_chosen">No apps chosen yet.</string>
+    <string name="settings_pinned_load_failed">Couldn\'t load your pinned apps right now.</string>
+    <string name="settings_pinned_load_partly_failed">Couldn\'t load some of your pinned apps right now.</string>
+    <string name="unpin_unavailable">Unpin unavailable apps</string>
+    <string name="move_up">Move up</string>
+    <string name="move_down">Move down</string>
+    <string name="edit_apps">Edit apps</string>
+    <string name="lock_icons">Lock drawer icons</string>
+    <string name="lock_icons_text">Stops long-press and drag from rearranging apps in the open drawer.</string>
+    <string name="section_handle">Handle</string>
+    <string name="handle_height">Height</string>
+    <string name="handle_opacity">Opacity</string>
+    <string name="allow">Allow</string>
+    <string name="choose_apps">Choose apps</string>
+    <string name="back">Back</string>
+    <string name="search">Search</string>
+    <plurals name="grant_usage_text">
+        <item quantity="one">Optional. The drawer lists your most recently used app above your pinned ones.</item>
+        <item quantity="other">Optional. The drawer lists your %1$d most recently used apps above your pinned ones.</item>
+    </plurals>
+    <plurals name="pinned_unavailable_count">
+        <item quantity="one">%1$d pinned app isn\'t available right now (e.g. its work profile is paused).</item>
+        <item quantity="other">%1$d pinned apps aren\'t available right now (e.g. their work profile is paused).</item>
+    </plurals>
+</resources>

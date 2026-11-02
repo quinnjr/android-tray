@@ -1,0 +1,345 @@
+package dev.quinnjr.android_drawer.apps
+
+import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.LauncherActivityInfo
+import android.content.pm.LauncherApps
+import android.graphics.Rect
+import android.graphics.drawable.Drawable
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.Process
+import android.os.SystemClock
+import android.os.UserHandle
+import android.os.UserManager
+import android.util.Log
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.toBitmap
+import dev.quinnjr.android_drawer.TAG
+import dev.quinnjr.android_drawer.settings.AppKey
+import java.text.Collator
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
+
+data class LaunchableApp(
+    val key: AppKey,
+    val label: String,
+    val icon: Drawable?,
+    val component: ComponentName,
+    val user: UserHandle,
+    /** [icon] already drawn to a bitmap, so the drawer doesn't rasterize on the main thread. */
+    val bitmap: ImageBitmap? = null,
+)
+
+/** Draws an icon at [sizePx] square. */
+fun Drawable.toImageBitmap(sizePx: Int): ImageBitmap = toBitmap(sizePx, sizePx).asImageBitmap()
+
+/**
+ * This app with its icon pre-rendered at [sizePx] and the drawable dropped, which the
+ * long-running service would otherwise keep alongside it. Call off the main thread.
+ */
+fun LaunchableApp.withBitmap(sizePx: Int): LaunchableApp = copy(bitmap = icon?.toImageBitmap(sizePx), icon = null)
+
+class AppCatalog(context: Context) {
+    private val packageName = context.packageName
+    private val entriesLock = Any()
+    @Volatile private var entriesCache: Map<String, List<LauncherActivityInfo>>? = null
+    @Volatile private var entriesGeneration = 0
+    @Volatile private var homeCache: Pair<Long, Set<String>>? = null
+    private val launcherApps = context.getSystemService(LauncherApps::class.java)
+    private val userManager = context.getSystemService(UserManager::class.java)
+
+    /**
+     * Every launchable app, sorted by label as the user's language sorts it. Each app comes from
+     * [obtain], which returns a cached one or makes (and draws) it right away, so only one app's
+     * full icon is held at a time.
+     */
+    fun allApps(obtain: AppSource): List<LaunchableApp> {
+        val collator = Collator.getInstance()
+        return activities()
+            .mapNotNull { (key, info) -> obtainOrSkip(obtain, key) { info.toApp(key) } }
+            .map { collator.getCollationKey(it.label) to it }
+            .sortedBy { it.first }
+            .map { it.second }
+    }
+
+    /**
+     * The apps for [keys], in order, and which keys are unavailable (locked, paused or removed
+     * profile; app uninstalled). An app whose package merely couldn't be listed is unknown
+     * instead. Apps [cached]
+     * already has are used as they are; for the rest only their packages are listed (not every
+     * installed app), and they're made through [obtain].
+     */
+    fun resolve(
+        keys: List<AppKey>,
+        cached: (AppKey) -> LaunchableApp? = { null },
+        obtain: AppSource,
+    ): Resolved {
+        // Checked for every key, cached or not: a cached app's profile may since have been
+        // paused, locked or removed.
+        val available = availableUsers()
+        val shown = keys.filter { it.userSerial in available }
+        val known = shown.mapNotNull { key -> cached(key)?.let { key to it } }.toMap()
+        val found = HashMap<AppKey, LauncherActivityInfo>()
+        val wanted = shown.filter { it !in known }
+            .groupBy { it.userSerial to it.pkg }
+            .mapValues { it.value.toHashSet() }
+        // Packages whose listing failed: their apps can't be called unavailable.
+        val unknown = HashSet<AppKey>()
+        for ((where, group) in wanted) {
+            val (serial, pkg) = where
+            val user = available.getValue(serial)
+            val entries = try {
+                launcherApps.getActivityList(pkg, user)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not list $pkg for $user", e)
+                unknown += group
+                continue
+            }
+            for (info in entries) {
+                val key = AppKey(info.componentName.flattenToString(), serial)
+                if (key in group) {
+                    found[key] = info
+                }
+            }
+        }
+        // One whose icon or label can't be made is still shown (blank icon, a fallback label;
+        // not cached, so it's tried again next load): it's pinned, and still launchable.
+        val apps = shown.mapNotNull { key ->
+            known[key] ?: found[key]?.let { info ->
+                obtainOrSkip(obtain, key) { info.toApp(key) } ?: info.toPlainApp(key)
+            }
+        }
+        val unavailable = keys.filterTo(HashSet()) { it.userSerial !in available || (it !in known && it !in found && it !in unknown) }
+        return Resolved(apps, unavailable, unknown)
+    }
+
+    /** Profiles whose apps can be shown now (unlocked, not paused), by serial number. */
+    private fun availableUsers(): Map<Long, UserHandle> = launcherApps.profiles
+        .filter { user -> userManager.isUserUnlocked(user) && !userManager.isQuietModeEnabled(user) }
+        .associateBy { userManager.getSerialNumberForUser(it) }
+
+    /**
+     * Up to [limit] recently used personal-profile apps, newest first, leaving out [pinned] apps,
+     * this app and the home screen.
+     */
+    fun recent(
+        pinned: List<AppKey>,
+        recents: RecentApps,
+        /** Gives cached apps (e.g. drawn on an earlier open) or makes them, so icons aren't reloaded. */
+        obtain: AppSource,
+        limit: Int = RECENT_LIMIT,
+    ): List<LaunchableApp> {
+        // Callers check recents.hasAccess() first (the drawer needs it to lay out anyway).
+        val me = Process.myUserHandle()
+        val serial = userManager.getSerialNumberForUser(me)
+        val byPackage = personalEntries()
+        val excluded = homePackages(recents) + packageName
+        val pinnedHere = pinned.filter { it.userSerial == serial }.mapTo(HashSet()) { it.component }
+        fun LauncherActivityInfo.isPinned() = componentName.flattenToString() in pinnedHere
+
+        val picked = recents.withHistory { history ->
+            history.pick(excluded, byPackage.keys).asSequence()
+                .mapNotNull { pkg ->
+                    val entries = byPackage.getValue(pkg)
+                    val used = entries.firstOrNull { it.componentName.className == history.lastActivity(pkg) }
+                    when {
+                        // Show the entry point actually used (e.g. Lens rather than Google), unless pinned.
+                        used != null -> used.takeUnless { it.isPinned() }
+                        // Used through an inner screen, so the entry is unknown: skip if any is pinned.
+                        entries.any { it.isPinned() } -> null
+                        else -> entries.first()
+                    }
+                }
+                .take(limit)
+                .toList()
+        }
+        return picked.mapNotNull { info ->
+            val key = AppKey(info.componentName.flattenToString(), serial)
+            obtainOrSkip(obtain, key) { info.toApp(key) }
+        }
+    }
+
+    /**
+     * One app through [obtain], or null if loading it failed (e.g. a broken icon, or its profile
+     * just went away): one bad app is left out rather than failing the whole list.
+     */
+    private inline fun obtainOrSkip(obtain: AppSource, key: AppKey, crossinline make: () -> LaunchableApp): LaunchableApp? =
+        orOnFailure("$key", null) { obtain(key) { make() } }
+
+    /** Personal-profile launcher entries by package, cached until [invalidate]. */
+    private fun personalEntries(): Map<String, List<LauncherActivityInfo>> {
+        entriesCache?.let { return it }
+        val generation = entriesGeneration
+        val entries = try {
+            launcherApps.getActivityList(null, Process.myUserHandle()).groupBy { it.componentName.packageName }
+        } catch (e: Exception) {
+            // Not cached: a passing failure mustn't leave recents empty until the next app change.
+            Log.w(TAG, "Could not list apps", e)
+            return emptyMap()
+        }
+        // Don't store a list read before an invalidate() that happened while reading it.
+        synchronized(entriesLock) {
+            if (generation == entriesGeneration) {
+                entriesCache = entries
+            }
+        }
+        return entries
+    }
+
+    /** Drops cached launcher entries; call when apps are installed, removed or changed. */
+    fun invalidate() = synchronized(entriesLock) {
+        entriesGeneration++
+        entriesCache = null
+        homeCache = null
+    }
+
+    /**
+     * Home apps, cached briefly: choosing a different default launcher sends no event, so the
+     * cache also expires on its own.
+     */
+    private fun homePackages(recents: RecentApps): Set<String> {
+        val now = SystemClock.elapsedRealtime()
+        homeCache?.takeIf { now - it.first < HOME_CACHE_MS }?.let { return it.second }
+        return recents.homePackages().also { homeCache = now to it }
+    }
+
+    private fun activities(): List<Pair<AppKey, LauncherActivityInfo>> = availableUsers().entries
+        .flatMap { (serial, user) ->
+            runCatching { launcherApps.getActivityList(null, user) }
+                .onFailure { Log.w(TAG, "Could not list apps for $user", it) }
+                .getOrDefault(emptyList())
+                .map { info -> AppKey(info.componentName.flattenToString(), serial) to info }
+        }
+
+    /** [toApp] without an icon, and with the package name if even the label can't be read. */
+    private fun LauncherActivityInfo.toPlainApp(key: AppKey) = LaunchableApp(
+        key = key,
+        label = runCatching { label.toString() }.getOrDefault(componentName.packageName),
+        icon = null,
+        component = componentName,
+        user = user,
+    )
+
+    private fun LauncherActivityInfo.toApp(key: AppKey) = LaunchableApp(
+        key = key,
+        label = label.toString(),
+        icon = getBadgedIcon(0),
+        component = componentName,
+        user = user,
+    )
+
+    /** Starts [app], saying whether it did, or why not. */
+    fun launch(app: LaunchableApp, sourceBounds: Rect?): LaunchResult = try {
+        launcherApps.startMainActivity(app.component, app.user, sourceBounds, null)
+        LaunchResult.STARTED
+    } catch (e: ActivityNotFoundException) {
+        Log.w(TAG, "App vanished: ${app.component}", e)
+        LaunchResult.GONE
+    } catch (e: SecurityException) {
+        // E.g. its profile is paused: reloading wouldn't help.
+        Log.w(TAG, "Not allowed to launch ${app.component}", e)
+        LaunchResult.NOT_ALLOWED
+    }
+
+    companion object {
+        /** How many recent apps the drawer shows. */
+        const val RECENT_LIMIT = 4
+        private const val HOME_CACHE_MS = 60_000L
+    }
+}
+
+/** How long app changes must settle before a burst of them (e.g. many updates) is acted on once. */
+internal const val APPS_CHANGED_SETTLE_MS = 500L
+
+/** What happened when an app was started. */
+enum class LaunchResult { STARTED, GONE, NOT_ALLOWED }
+
+/**
+ * Resolved pinned apps, the keys that are definitely [unavailable], and those that couldn't be
+ * listed ([unknown]: a failure, not the same as unavailable).
+ */
+data class Resolved(val apps: List<LaunchableApp>, val unavailable: Set<AppKey>, val unknown: Set<AppKey> = emptySet())
+
+/**
+ * The pinned apps for [keys] through [cache] (drawn ones reused, others drawn and kept); null if
+ * loading failed altogether. Shared by the drawer and the settings screen.
+ */
+suspend fun AppCatalog.resolveDrawn(cache: DrawnAppCache, keys: List<AppKey>): Resolved? =
+    orOnFailure("pinned apps", null) {
+        cache.load { obtain -> resolve(keys, cached = { cache[it] }, obtain = obtain) }
+    }
+
+/**
+ * How a catalog gets each app: `obtain(key) { make() }` returns a cached app for [AppKey] or makes
+ * one (and may draw its icon) with the given function.
+ */
+typealias AppSource = (key: AppKey, make: () -> LaunchableApp) -> LaunchableApp
+
+/**
+ * These app changes as reloads: a burst of [relevant] ones gives one once it settles, and there's
+ * one to start. (The service's pinned apps settle their own way: see EdgeService.pinnedLoads().)
+ */
+@OptIn(FlowPreview::class)
+fun Flow<String?>.reloads(relevant: (pkg: String?) -> Boolean = { true }): Flow<Unit> =
+    filter(relevant).debounce(APPS_CHANGED_SETTLE_MS).map { }.onStart { emit(Unit) }
+
+/**
+ * Emits whenever an app is installed, removed or changed in any profile (its package name), or
+ * several apps or a whole profile (work apps, Private Space) change at once (null).
+ */
+fun appsChanged(context: Context): Flow<String?> = callbackFlow {
+    val profileReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) { trySend(null) }
+    }
+    val profileActions = IntentFilter().apply {
+        addAction(Intent.ACTION_MANAGED_PROFILE_AVAILABLE)
+        addAction(Intent.ACTION_MANAGED_PROFILE_UNAVAILABLE)
+        addAction(Intent.ACTION_MANAGED_PROFILE_UNLOCKED)
+        addAction(Intent.ACTION_MANAGED_PROFILE_REMOVED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            addAction(Intent.ACTION_PROFILE_AVAILABLE)
+            addAction(Intent.ACTION_PROFILE_UNAVAILABLE)
+        }
+    }
+    ContextCompat.registerReceiver(context, profileReceiver, profileActions, ContextCompat.RECEIVER_NOT_EXPORTED)
+
+    val launcherApps = context.getSystemService(LauncherApps::class.java)
+    val callback = object : LauncherApps.Callback() {
+        override fun onPackageRemoved(packageName: String?, user: UserHandle?) { trySend(packageName) }
+        override fun onPackageAdded(packageName: String?, user: UserHandle?) { trySend(packageName) }
+        override fun onPackageChanged(packageName: String?, user: UserHandle?) { trySend(packageName) }
+        override fun onPackagesAvailable(packageNames: Array<out String>?, user: UserHandle?, replacing: Boolean) { trySend(null) }
+        override fun onPackagesUnavailable(packageNames: Array<out String>?, user: UserHandle?, replacing: Boolean) { trySend(null) }
+
+        // Suspended apps (Digital Wellbeing, Focus mode, an admin) get a greyed-out icon.
+        override fun onPackagesSuspended(packageNames: Array<out String>?, user: UserHandle?) {
+            packageNames.orEmpty().forEach { trySend(it) }
+        }
+
+        override fun onPackagesUnsuspended(packageNames: Array<out String>?, user: UserHandle?) {
+            packageNames.orEmpty().forEach { trySend(it) }
+        }
+    }
+    launcherApps.registerCallback(callback, Handler(Looper.getMainLooper()))
+    awaitClose {
+        launcherApps.unregisterCallback(callback)
+        context.unregisterReceiver(profileReceiver)
+    }
+    // Unbounded: a big update burst must not drop events, as each one invalidates caches.
+}.buffer(Channel.UNLIMITED)
