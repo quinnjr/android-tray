@@ -59,32 +59,29 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     /** The settings; null until first read. */
     val settings: StateFlow<DrawerSettings?> = repo.settings.stateIn(viewModelScope, SharingStarted.Eagerly, repo.value)
 
-    /**
-     * App changes, watched for as long as this ViewModel lives so [icons] never misses one; a
-     * burst of updates gives a single reload, and there is one to start with.
-     */
-    private val reloads: Flow<Unit> = appsChanged(app)
+    /** App changes, watched for as long as this ViewModel lives so [icons] never misses one. */
+    private val appChanges: Flow<String?> = appsChanged(app)
         .onEach(icons::onAppChanged)
         .shareIn(viewModelScope, SharingStarted.Eagerly)
-        .reloads()
 
     /** The pinned apps, for the settings screen; null while loading. */
     val chosenApps: StateFlow<PinnedApps?> = combine(
         repo.settings.map { it.apps }.distinctUntilChanged(),
-        reloads,
+        // Only changes to pinned apps (or to many apps or a whole profile) matter here.
+        appChanges.reloads { pkg -> pkg == null || settings.value?.apps.orEmpty().any { it.pkg == pkg } },
         drawConfig.filterNotNull(),
     ) { keys, _, config -> keys to config }
         .mapLatest { (keys, config) ->
             icons.use(config)
             catalog.resolveDrawn(icons, keys)
-                ?.let { PinnedApps(keys, it.apps, it.unavailable) }
+                ?.let { PinnedApps(keys, it.apps, it.unavailable, failed = it.unknown.isNotEmpty()) }
                 ?: PinnedApps(keys, emptyList(), emptySet(), failed = true)
         }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** Every launchable app, for the app picker (only loaded while it is shown); null while loading. */
-    val allApps: StateFlow<List<LaunchableApp>?> = combine(reloads, drawConfig.filterNotNull()) { _, config -> config }
+    val allApps: StateFlow<List<LaunchableApp>?> = combine(appChanges.reloads(), drawConfig.filterNotNull()) { _, config -> config }
         .mapLatest { config ->
             icons.use(config)
             orOnFailure("apps", emptyList()) { icons.load { obtain -> catalog.allApps(obtain) } }

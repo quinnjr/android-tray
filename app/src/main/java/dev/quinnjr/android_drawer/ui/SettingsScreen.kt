@@ -143,7 +143,11 @@ fun SettingsScreen(
             if (chosenApps?.failed == true) {
                 item {
                     Text(
-                        "Couldn't load your pinned apps right now.",
+                        if (shown.isEmpty()) {
+                            "Couldn't load your pinned apps right now."
+                        } else {
+                            "Couldn't load some of your pinned apps right now."
+                        },
                         Modifier.padding(horizontal = 16.dp),
                         style = MaterialTheme.typography.bodyMedium,
                     )

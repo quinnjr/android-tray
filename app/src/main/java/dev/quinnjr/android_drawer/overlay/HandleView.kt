@@ -11,6 +11,7 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import dev.quinnjr.android_drawer.settings.HANDLE_ALPHA_RANGE
 import dev.quinnjr.android_drawer.settings.Side
 
 /** Visible width of the pill drawn inside the (wider) touch window. */
@@ -49,7 +50,8 @@ class HandleView(
     fun configure(side: Side, color: Long, alpha: Float, screenWidth: Int) {
         this.side = side
         paint.color = color.toInt()
-        paint.alpha = (alpha.coerceIn(0f, 1f) * 255).toInt()
+        // Never fully invisible, whatever was stored.
+        paint.alpha = (alpha.coerceIn(HANDLE_ALPHA_RANGE) * 255).toInt()
         val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
         val openDistance = OPEN_DISTANCE_DP * density
         val longPressMs = ViewConfiguration.getLongPressTimeout().toLong()

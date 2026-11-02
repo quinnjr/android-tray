@@ -17,6 +17,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dev.quinnjr.android_drawer.R
 import dev.quinnjr.android_drawer.TAG
+import dev.quinnjr.android_drawer.overlay.clampHandleHeightDp
 import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CancellationException
@@ -239,9 +240,11 @@ class SettingsRepository private constructor(context: Context) {
         return DrawerSettings(
             enabled = this[ENABLED] ?: defaults.enabled,
             side = this[SIDE]?.let { runCatching { Side.valueOf(it) }.getOrNull() } ?: defaults.side,
-            yFraction = this[Y_FRACTION] ?: defaults.yFraction,
-            handleHeightDp = this[HEIGHT] ?: defaults.handleHeightDp,
-            handleAlpha = this[ALPHA] ?: defaults.handleAlpha,
+            // Kept within what the settings screen allows, whatever the file says (e.g. written
+            // by an older version, or restored).
+            yFraction = this[Y_FRACTION]?.takeUnless { it.isNaN() }?.coerceIn(0f, 1f) ?: defaults.yFraction,
+            handleHeightDp = this[HEIGHT]?.let(::clampHandleHeightDp) ?: defaults.handleHeightDp,
+            handleAlpha = this[ALPHA]?.takeUnless { it.isNaN() }?.coerceIn(HANDLE_ALPHA_RANGE) ?: defaults.handleAlpha,
             handleColor = this[COLOR] ?: defaults.handleColor,
             apps = this[APPS]?.let(::decodeApps) ?: defaults.apps,
             iconsLocked = this[ICONS_LOCKED] ?: defaults.iconsLocked,

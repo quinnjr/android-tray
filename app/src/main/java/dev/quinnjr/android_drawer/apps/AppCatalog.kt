@@ -69,7 +69,7 @@ class AppCatalog(context: Context) {
      * [obtain], which returns a cached one or makes (and draws) it right away, so only one app's
      * full icon is held at a time.
      */
-    fun allApps(obtain: AppSource = MakeEach): List<LaunchableApp> {
+    fun allApps(obtain: AppSource): List<LaunchableApp> {
         val collator = Collator.getInstance()
         return activities()
             .mapNotNull { (key, info) -> obtainOrSkip(obtain, key) { info.toApp(key) } }
@@ -80,14 +80,15 @@ class AppCatalog(context: Context) {
 
     /**
      * The apps for [keys], in order, and which keys are unavailable (locked, paused or removed
-     * profile; app uninstalled). An app that merely failed to load is in neither. Apps [cached]
+     * profile; app uninstalled). An app that merely failed to load (its package couldn't be
+     * listed, or its icon or label couldn't be made) is unknown instead. Apps [cached]
      * already has are used as they are; for the rest only their packages are listed (not every
      * installed app), and they're made through [obtain].
      */
     fun resolve(
         keys: List<AppKey>,
         cached: (AppKey) -> LaunchableApp? = { null },
-        obtain: AppSource = MakeEach,
+        obtain: AppSource,
     ): Resolved {
         // Checked for every key, cached or not: a cached app's profile may since have been
         // paused, locked or removed.
@@ -117,7 +118,14 @@ class AppCatalog(context: Context) {
                 }
             }
         }
-        val apps = shown.mapNotNull { key -> known[key] ?: found[key]?.let { info -> obtainOrSkip(obtain, key) { info.toApp(key) } } }
+        val apps = shown.mapNotNull { key ->
+            known[key] ?: found[key]?.let { info ->
+                obtainOrSkip(obtain, key) { info.toApp(key) } ?: run {
+                    unknown += key
+                    null
+                }
+            }
+        }
         val unavailable = keys.filterTo(HashSet()) { it.userSerial !in available || (it !in known && it !in found && it !in unknown) }
         return Resolved(apps, unavailable, unknown)
     }
@@ -135,7 +143,7 @@ class AppCatalog(context: Context) {
         pinned: List<AppKey>,
         recents: RecentApps,
         /** Gives cached apps (e.g. drawn on an earlier open) or makes them, so icons aren't reloaded. */
-        obtain: AppSource = MakeEach,
+        obtain: AppSource,
         limit: Int = RECENT_LIMIT,
     ): List<LaunchableApp> {
         // Callers check recents.hasAccess() first (the drawer needs it to lay out anyway).
@@ -275,16 +283,13 @@ suspend fun AppCatalog.resolveDrawn(cache: DrawnAppCache, keys: List<AppKey>): R
  */
 typealias AppSource = (key: AppKey, make: () -> LaunchableApp) -> LaunchableApp
 
-/** Makes every app afresh; no cache. */
-val MakeEach: AppSource = { _, make -> make() }
-
-/** Events with a burst collapsed into one once it settles. */
+/**
+ * These app changes as reloads: a burst of [relevant] ones gives one once it settles, and there's
+ * one to start. (The service's pinned apps settle their own way: see EdgeService.pinnedApps().)
+ */
 @OptIn(FlowPreview::class)
-fun <T> Flow<T>.settled(): Flow<T> = debounce(APPS_CHANGED_SETTLE_MS)
-
-/** These app changes as reloads: a burst of [relevant] ones gives one, and there's one to start. */
 fun Flow<String?>.reloads(relevant: (pkg: String?) -> Boolean = { true }): Flow<Unit> =
-    filter(relevant).settled().map { }.onStart { emit(Unit) }
+    filter(relevant).debounce(APPS_CHANGED_SETTLE_MS).map { }.onStart { emit(Unit) }
 
 /**
  * Emits whenever an app is installed, removed or changed in any profile (its package name), or

@@ -342,8 +342,7 @@ class EdgeService : LifecycleService() {
                     onAppChanged(app.key.pkg)
                     if (app.key in shownPinned.value?.keys.orEmpty()) {
                         retryPinned()
-                    }
-                    if (app.key !in shownPinned.value?.keys.orEmpty()) {
+                    } else {
                         recentRefresh.value++
                     }
                 }
@@ -452,6 +451,12 @@ class EdgeService : LifecycleService() {
         if (intent?.getBooleanExtra(EXTRA_FOREGROUND_REQUIRED, false) == true) {
             foregroundRequired = true
             if (!foreground) { foreground = tryStartForeground() }
+            if (foreground) {
+                awaitingForeground = false
+            }
+        }
+        if (intent?.action == ACTION_STOP) {
+            stop()
         }
         return super.onStartCommand(intent, flags, startId)
     }
@@ -462,6 +467,7 @@ class EdgeService : LifecycleService() {
     }
 
     override fun onDestroy() {
+        awaitingForeground = false
         stopObservingSettings()
         mainHandler.removeCallbacksAndMessages(null)
         appOps.stopWatchingMode(overlayPermissionListener)
@@ -522,6 +528,13 @@ class EdgeService : LifecycleService() {
         private const val EXTRA_CLOSE_REASON = "reason"
 
         private const val EXTRA_FOREGROUND_REQUIRED = "foreground_required"
+        private const val ACTION_STOP = "dev.quinnjr.android_drawer.action.STOP"
+
+        /**
+         * Started through startForegroundService() and not yet foreground: stopping it from
+         * outside now would crash the app (the system requires startForeground() first).
+         */
+        @Volatile private var awaitingForeground = false
 
         /** Starts or stops the service to match [enabled] and the overlay permission. */
         fun sync(context: Context, enabled: Boolean) {
@@ -533,13 +546,27 @@ class EdgeService : LifecycleService() {
         }
 
         fun start(context: Context) {
+            awaitingForeground = true
             context.startForegroundService(
                 Intent(context, EdgeService::class.java).putExtra(EXTRA_FOREGROUND_REQUIRED, true),
             )
         }
 
         fun stop(context: Context) {
-            context.stopService(Intent(context, EdgeService::class.java))
+            val intent = Intent(context, EdgeService::class.java)
+            if (!awaitingForeground) {
+                context.stopService(intent)
+                return
+            }
+            // Asked to stop itself instead, after its pending start (commands arrive in order),
+            // which goes foreground first.
+            try {
+                context.startService(intent.setAction(ACTION_STOP))
+            } catch (e: IllegalStateException) {
+                // Not allowed from the background; callers are in the foreground, but just in case.
+                Log.w(TAG, "Could not ask the edge handle to stop", e)
+                context.stopService(intent)
+            }
         }
     }
 }
