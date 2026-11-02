@@ -16,9 +16,10 @@ import dev.quinnjr.android_drawer.overlay.clampHandleHeightDp
 import dev.quinnjr.android_drawer.service.EdgeService
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.DrawerSettings
-import dev.quinnjr.android_drawer.settings.HANDLE_ALPHA_RANGE
 import dev.quinnjr.android_drawer.settings.SettingsRepository
+import dev.quinnjr.android_drawer.settings.concernsPackage
 import dev.quinnjr.android_drawer.settings.movedAmongShown
+import dev.quinnjr.android_drawer.settings.toHandleAlpha
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
@@ -68,7 +69,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     val chosenApps: StateFlow<PinnedApps?> = combine(
         repo.settings.map { it.apps }.distinctUntilChanged(),
         // Only changes to pinned apps (or to many apps or a whole profile) matter here.
-        appChanges.reloads { pkg -> pkg == null || settings.value?.apps.orEmpty().any { it.pkg == pkg } },
+        appChanges.reloads { pkg -> settings.value?.concernsPackage(pkg) ?: (pkg == null) },
         drawConfig.filterNotNull(),
     ) { keys, _, config -> keys to config }
         .mapLatest { (keys, config) ->
@@ -119,7 +120,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         update { it.copy(apps = it.apps.movedAmongShown(shown, key, delta)) }
     }
     fun setHeight(dp: Int) = update { it.copy(handleHeightDp = clampHandleHeightDp(dp)) }
-    fun setAlpha(alpha: Float) = update { it.copy(handleAlpha = alpha.coerceIn(HANDLE_ALPHA_RANGE)) }
+    fun setAlpha(alpha: Float) = update { it.copy(handleAlpha = alpha.toHandleAlpha()) }
     fun setColor(color: Long) = update { it.copy(handleColor = color) }
     fun setIconsLocked(locked: Boolean) = update { it.copy(iconsLocked = locked) }
 

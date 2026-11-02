@@ -45,6 +45,7 @@ import dev.quinnjr.android_drawer.overlay.PinnedStatus
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.SettingsRepository
+import dev.quinnjr.android_drawer.settings.concernsPackage
 import dev.quinnjr.android_drawer.settings.toastSaveFailed
 import dev.quinnjr.android_drawer.settings.withVisibleOrder
 import dev.quinnjr.android_drawer.ui.MainActivity
@@ -61,7 +62,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.scan
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
@@ -84,7 +85,7 @@ class EdgeService : LifecycleService() {
      * While a reload runs, or after it failed, the last list is kept and marked as such (launching
      * from it is safe: a vanished app just isn't started). Null until the first load.
      */
-    private val pinned = MutableStateFlow<Pinned?>(null)
+    private val kept = MutableStateFlow<KeptLoad<LaunchableApp>?>(null)
     /**
      * The pinned apps' keys in their saved order (null until the settings are read): one shared
      * reading for the pinned apps and recents.
@@ -122,6 +123,12 @@ class EdgeService : LifecycleService() {
     /** Recent apps with icons already drawn, so reopening the drawer doesn't redraw them. */
     private val recentIcons = DrawnAppCache(MAX_RECENT_ICONS)
     private var foreground = false
+        set(value) {
+            field = value
+            if (value) {
+                awaitingForeground = false
+            }
+        }
     /** Started through startForegroundService(), so startForeground() is mandatory. */
     private var foregroundRequired = false
     private var retryScheduled = false
@@ -203,7 +210,9 @@ class EdgeService : LifecycleService() {
         }
         pinnedKeys = repo.settings.map { it.apps }.distinctUntilChanged()
             .stateIn(lifecycleScope, SharingStarted.Eagerly, repo.value?.apps)
-        lifecycleScope.launch { pinnedApps().collect { pinned.value = it } }
+        // The one state of the pinned apps, moved on by each step of the loads (and by a retry, at
+        // once: see retryPinned()), always through keep().
+        lifecycleScope.launch { pinnedLoads().collect { next -> kept.update { it.keep(next) } } }
     }
 
     /**
@@ -211,7 +220,7 @@ class EdgeService : LifecycleService() {
      * until the reload lands. After a change to the apps themselves it waits for a burst (e.g. many
      * updates) to settle before reloading.
      */
-    private fun pinnedApps(): Flow<Pinned?> {
+    private fun pinnedLoads(): Flow<LoadedPinned<LaunchableApp>?> {
         val keys = pinnedKeys.filterNotNull()
         // Loaded by the set of pinned apps: a reorder needs no reload (and shows no spinner).
         // The app changes the last load waited for (see below).
@@ -258,12 +267,21 @@ class EdgeService : LifecycleService() {
                 lastRetry = retry
                 emit(LoadedPinned(set, apps?.apps?.associateBy { it.key }, unknown = apps?.unknown.orEmpty()))
             }
-        // While reloading, or after a reload failed, the last good load is kept (so an open drawer
-        // keeps its grid, scroll and any press under way); the current saved order is applied after,
-        // so a kept load still shows a reorder saved meanwhile and leaves out apps unpinned since.
-        val kept = loaded.scan<LoadedPinned<LaunchableApp>?, KeptLoad<LaunchableApp>?>(null) { last, next -> last.keep(next) }
-        // The status reflects the current keys, so it never shows a load for another set as current.
-        return combine(keys, kept) { order, k -> k?.let { Pinned(order, it) } }.distinctUntilChanged()
+        return loaded
+    }
+
+    /**
+     * The pinned apps now: [kept] (while reloading, or after a reload failed, the last good load,
+     * so an open drawer keeps its grid, scroll and any press under way) with the current saved
+     * order applied after, so a kept load still shows a reorder saved meanwhile and leaves out
+     * apps unpinned since. The status reflects the current keys, so it never shows a load for
+     * another set as current. Null until the first load.
+     */
+    private fun currentPinned(): Pinned? = kept.value?.let { k -> pinnedKeys.value?.let { Pinned(it, k) } }
+
+    /** [currentPinned] as it changes. */
+    private val pinned: Flow<Pinned?> by lazy {
+        combine(pinnedKeys.filterNotNull(), kept) { order, k -> k?.let { Pinned(order, it) } }.distinctUntilChanged()
     }
 
     private fun openDrawer() {
@@ -277,7 +295,7 @@ class EdgeService : LifecycleService() {
         // A failed load is retried whenever someone opens the drawer (e.g. LauncherApps wasn't
         // ready right after boot). (Not while a load is already running: that would only restart
         // it.) It shows as reloading at once, in this drawer's first frame (see retryPinned()).
-        if (pinned.value?.status == PinnedStatus.FAILED) {
+        if (currentPinned()?.status == PinnedStatus.FAILED) {
             retryPinned()
         }
         // Recents depend on what was just used, so they're read on every open and fill in when
@@ -287,7 +305,7 @@ class EdgeService : LifecycleService() {
         // What the drawer shows about the pinned apps (the grid, its status, "no apps" vs
         // "unavailable") comes from this one value, shown at once (null until loaded; usually it
         // already is).
-        val shownPinned = mutableStateOf(pinned.value)
+        val shownPinned = mutableStateOf(currentPinned())
         // Their order: straight from the settings (Compose state, so a drag's new order, applied
         // to the settings at once, shows in the same frame, and so does an undo).
         val order = derivedStateOf { settingsState.value?.apps.orEmpty() }
@@ -387,17 +405,15 @@ class EdgeService : LifecycleService() {
             return
         }
         ContextCompat.getMainExecutor(applicationContext).execute {
-            drawerNotice?.invoke(getString(R.string.settings_save_failed)) ?: applicationContext.toastSaveFailed()
+            // Not into a drawer already closing: it can't be read there.
+            drawerNotice?.takeIf { host.isDrawerOpen }?.invoke(getString(R.string.settings_save_failed))
+                ?: applicationContext.toastSaveFailed()
         }
     }
 
-    /**
-     * Retries loading the pinned apps, showing that at once: the reloading state is set here
-     * through the flow's own first step, keep(null), which the flow then applies itself a
-     * dispatch later (so they agree), and the reload is triggered.
-     */
+    /** Retries loading the pinned apps: marked as reloading at once (as any reload is), then started. */
     private fun retryPinned() {
-        pinned.value?.let { p -> p.kept.keep(null)?.let { pinned.value = p.copy(kept = it) } }
+        kept.update { it.keep(null) }
         pinnedRetry.value++
     }
 
@@ -412,8 +428,7 @@ class EdgeService : LifecycleService() {
     }
 
     /** Whether a change to [pkg] (null: several apps or a whole profile) concerns the pinned apps. */
-    private fun affectsPinned(pkg: String?): Boolean =
-        pkg == null || latestSettings?.apps.orEmpty().any { it.pkg == pkg }
+    private fun affectsPinned(pkg: String?): Boolean = latestSettings?.concernsPackage(pkg) ?: (pkg == null)
 
 
     private suspend fun recentApps(pinned: List<AppKey>): List<LaunchableApp> = withContext(Dispatchers.Default) {
@@ -451,11 +466,9 @@ class EdgeService : LifecycleService() {
         if (intent?.getBooleanExtra(EXTRA_FOREGROUND_REQUIRED, false) == true) {
             foregroundRequired = true
             if (!foreground) { foreground = tryStartForeground() }
-            if (foreground) {
-                awaitingForeground = false
-            }
         }
-        if (intent?.action == ACTION_STOP) {
+        // Unless it was switched back on since (a start queued after this stop already ran).
+        if (intent?.action == ACTION_STOP && !(latestSettings?.enabled == true && Settings.canDrawOverlays(this))) {
             stop()
         }
         return super.onStartCommand(intent, flags, startId)
@@ -547,9 +560,15 @@ class EdgeService : LifecycleService() {
 
         fun start(context: Context) {
             awaitingForeground = true
-            context.startForegroundService(
-                Intent(context, EdgeService::class.java).putExtra(EXTRA_FOREGROUND_REQUIRED, true),
-            )
+            try {
+                context.startForegroundService(
+                    Intent(context, EdgeService::class.java).putExtra(EXTRA_FOREGROUND_REQUIRED, true),
+                )
+            } catch (e: RuntimeException) {
+                // Never started, so nothing to wait for.
+                awaitingForeground = false
+                throw e
+            }
         }
 
         fun stop(context: Context) {

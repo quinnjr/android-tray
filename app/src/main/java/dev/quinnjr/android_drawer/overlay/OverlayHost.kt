@@ -43,6 +43,8 @@ class OverlayHost(
     private var handle: HandleView? = null
     private val handleParams = overlayParams(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
         .apply { gravity = Gravity.TOP or Gravity.START }
+    /** Scratch copy of [handleParams], reused: to tell whether showHandle() changed them. */
+    private val handleParamsBefore = WindowManager.LayoutParams()
 
     private var drawer: DrawerWindowView? = null
     private var drawerOwner: OverlayLifecycleOwner? = null
@@ -65,7 +67,7 @@ class OverlayHost(
     /** Shows the handle as [s] says; the window is only updated if that moves or resizes it. */
     fun showHandle(s: DrawerSettings) {
         settings = s
-        val before = WindowManager.LayoutParams().apply { copyFrom(handleParams) }
+        handleParamsBefore.copyFrom(handleParams)
         val view = handle ?: HandleView(
             context,
             onOpen = onOpen,
@@ -89,8 +91,9 @@ class OverlayHost(
         applyHandleVisibility(updateWindow = false)
         if (view !in added) {
             add(view, handleParams)
-        } else if (before.copyFrom(handleParams) != 0) {
-            // copyFrom() reports which of the window's attributes differ: any at all.
+        } else if (handleParamsBefore.copyFrom(handleParams) != 0) {
+            // copyFrom() reports which of the window's attributes differ (any at all, so a field
+            // set elsewhere later is covered too), without allocating.
             update(view, handleParams)
         }
         if (!watching) {

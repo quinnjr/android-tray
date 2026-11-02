@@ -133,7 +133,9 @@ class SettingsRepository private constructor(context: Context) {
     /**
      * Calls [observer] with the settings now (once read) and on every change, synchronously, on
      * whichever thread makes it: for state that must follow a change in the same frame (e.g.
-     * Compose state, which may be written from any thread). Returns a function that stops it.
+     * Compose state, which may be written from any thread). It's called under the repository's
+     * lock, so the calls arrive in order: it must only record the value (no blocking, no calls
+     * back into the repository). Returns a function that stops it.
      */
     fun observe(observer: (DrawerSettings) -> Unit): () -> Unit {
         synchronized(stateLock) {
@@ -156,18 +158,26 @@ class SettingsRepository private constructor(context: Context) {
         transform: (DrawerSettings) -> DrawerSettings,
         onResult: (saved: Boolean) -> Unit = {},
     ): Deferred<Boolean> {
-        val mine = synchronized(stateLock) {
-            val before = current.value?.settings ?: return done(false, onResult)
-            val next = transform(before)
-            // Nothing to do, unless an earlier change is still being saved: then this one's
-            // outcome is that save's (which may yet undo it).
-            if (next == before && version == onDiskVersion) {
-                return done(true, onResult)
+        // Worked out under the lock; [onResult] only ever runs outside it.
+        val mine: Long? = synchronized(stateLock) {
+            val before = current.value?.settings
+            val next = before?.let(transform)
+            when {
+                before == null -> NOT_READ
+                // Nothing to do, unless an earlier change is still being saved: then this one's
+                // outcome is that save's (which may yet undo it).
+                next == before && version == onDiskVersion -> null
+                else -> {
+                    show(checkNotNull(next))
+                    ++version
+                }
             }
-            show(next)
-            ++version
         }
-        return scope.async { writeLock.withLock { save(mine) }.also(onResult) }
+        return when (mine) {
+            NOT_READ -> done(false, onResult)
+            null -> done(true, onResult)
+            else -> scope.async { writeLock.withLock { save(mine) }.also(onResult) }
+        }
     }
 
     private fun done(saved: Boolean, onResult: (Boolean) -> Unit): Deferred<Boolean> {
@@ -244,7 +254,7 @@ class SettingsRepository private constructor(context: Context) {
             // by an older version, or restored).
             yFraction = this[Y_FRACTION]?.takeUnless { it.isNaN() }?.coerceIn(0f, 1f) ?: defaults.yFraction,
             handleHeightDp = this[HEIGHT]?.let(::clampHandleHeightDp) ?: defaults.handleHeightDp,
-            handleAlpha = this[ALPHA]?.takeUnless { it.isNaN() }?.coerceIn(HANDLE_ALPHA_RANGE) ?: defaults.handleAlpha,
+            handleAlpha = this[ALPHA]?.toHandleAlpha() ?: defaults.handleAlpha,
             handleColor = this[COLOR] ?: defaults.handleColor,
             apps = this[APPS]?.let(::decodeApps) ?: defaults.apps,
             iconsLocked = this[ICONS_LOCKED] ?: defaults.iconsLocked,
@@ -269,5 +279,7 @@ class SettingsRepository private constructor(context: Context) {
         private const val RETRY_STEP_MS = 1_000L
         private const val MAX_RETRY_STEPS = 30L
         private const val READ_WAIT_MS = 5_000L
+        /** change(): the settings haven't been read (versions start at 1). */
+        private const val NOT_READ = 0L
     }
 }

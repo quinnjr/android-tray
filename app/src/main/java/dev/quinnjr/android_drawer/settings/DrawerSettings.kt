@@ -25,6 +25,15 @@ data class AppKey(val component: String, val userSerial: Long) {
 /** Allowed handle opacity: never fully invisible, so it can still be found. */
 val HANDLE_ALPHA_RANGE = 0.2f..1f
 
+/** This opacity, kept within [HANDLE_ALPHA_RANGE] (NaN, which no range comparison catches, counts as opaque). */
+fun Float.toHandleAlpha(): Float = if (isNaN()) { HANDLE_ALPHA_RANGE.endInclusive } else { coerceIn(HANDLE_ALPHA_RANGE) }
+
+/**
+ * Whether a change to [pkg] (null: several apps or a whole profile) concerns the pinned apps, so
+ * they need reloading.
+ */
+fun DrawerSettings.concernsPackage(pkg: String?): Boolean = pkg == null || apps.any { it.pkg == pkg }
+
 data class DrawerSettings(
     val enabled: Boolean = true,
     val side: Side = Side.RIGHT,

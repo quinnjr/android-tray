@@ -39,7 +39,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import dev.quinnjr.android_drawer.R
 import dev.quinnjr.android_drawer.apps.AppCatalog
 import dev.quinnjr.android_drawer.overlay.MAX_HANDLE_HEIGHT_DP
 import dev.quinnjr.android_drawer.overlay.MIN_HANDLE_HEIGHT_DP
@@ -71,7 +74,7 @@ fun SettingsScreen(
     onColorChange: (Long) -> Unit,
 ) {
     val shown = chosenApps?.apps.orEmpty()
-    Scaffold(topBar = { TopAppBar(title = { Text("Edge Drawer") }) }) { padding ->
+    Scaffold(topBar = { TopAppBar(title = { Text(stringResource(R.string.app_name)) }) }) { padding ->
         LazyColumn(
             contentPadding = padding,
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -80,8 +83,8 @@ fun SettingsScreen(
             if (!canDrawOverlays) {
                 item {
                     PermissionCard(
-                        "Allow display over other apps",
-                        "Needed to show the edge handle on top of every app.",
+                        stringResource(R.string.grant_overlay_title),
+                        stringResource(R.string.grant_overlay_text),
                         onGrantOverlay,
                     )
                 }
@@ -89,8 +92,8 @@ fun SettingsScreen(
             if (!notificationsGranted) {
                 item {
                     PermissionCard(
-                        "Allow notifications",
-                        "Android shows a small notification while the handle is running.",
+                        stringResource(R.string.grant_notifications_title),
+                        stringResource(R.string.grant_notifications_text),
                         onGrantNotifications,
                     )
                 }
@@ -98,8 +101,8 @@ fun SettingsScreen(
             if (!usageAccessGranted) {
                 item {
                     PermissionCard(
-                        "Allow usage access to show recent apps",
-                        "Optional. The drawer lists your ${AppCatalog.RECENT_LIMIT} most recently used apps above your pinned ones.",
+                        stringResource(R.string.grant_usage_title),
+                        pluralStringResource(R.plurals.grant_usage_text, AppCatalog.RECENT_LIMIT, AppCatalog.RECENT_LIMIT),
                         onGrantUsageAccess,
                     )
                 }
@@ -113,9 +116,9 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("Show edge handle", style = MaterialTheme.typography.titleMedium)
+                        Text(stringResource(R.string.show_handle), style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "Swipe it to open the drawer. Long-press and drag to move it.",
+                            stringResource(R.string.show_handle_text),
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
@@ -126,13 +129,13 @@ fun SettingsScreen(
                     )
                 }
             }
-            item { SectionTitle("Drawer apps") }
+            item { SectionTitle(stringResource(R.string.section_drawer_apps)) }
             if (chosenApps == null) {
                 item { CircularProgressIndicator(Modifier.padding(horizontal = 16.dp).size(24.dp)) }
             } else if (chosenApps.keys.isEmpty()) {
                 item {
                     Text(
-                        "No apps chosen yet.",
+                        stringResource(R.string.no_apps_chosen),
                         Modifier.padding(horizontal = 16.dp),
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -144,9 +147,9 @@ fun SettingsScreen(
                 item {
                     Text(
                         if (shown.isEmpty()) {
-                            "Couldn't load your pinned apps right now."
+                            stringResource(R.string.settings_pinned_load_failed)
                         } else {
-                            "Couldn't load some of your pinned apps right now."
+                            stringResource(R.string.settings_pinned_load_partly_failed)
                         },
                         Modifier.padding(horizontal = 16.dp),
                         style = MaterialTheme.typography.bodyMedium,
@@ -159,14 +162,10 @@ fun SettingsScreen(
                 item {
                     Column(Modifier.padding(horizontal = 16.dp)) {
                         Text(
-                            if (unavailable.size == 1) {
-                                "1 pinned app isn't available right now (e.g. its work profile is paused)."
-                            } else {
-                                "${unavailable.size} pinned apps aren't available right now (e.g. their work profile is paused)."
-                            },
+                            pluralStringResource(R.plurals.pinned_unavailable_count, unavailable.size, unavailable.size),
                             style = MaterialTheme.typography.bodyMedium,
                         )
-                        TextButton(onClick = { onUnpinUnavailable(unavailable) }) { Text("Unpin unavailable apps") }
+                        TextButton(onClick = { onUnpinUnavailable(unavailable) }) { Text(stringResource(R.string.unpin_unavailable)) }
                     }
                 }
             }
@@ -178,16 +177,16 @@ fun SettingsScreen(
                     AppIcon(app)
                     Text(app.label, Modifier.weight(1f).padding(start = 16.dp))
                     IconButton(onClick = { onMoveApp(app.key, -1) }, enabled = index > 0) {
-                        Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Move up")
+                        Icon(Icons.Filled.KeyboardArrowUp, contentDescription = stringResource(R.string.move_up))
                     }
                     IconButton(onClick = { onMoveApp(app.key, +1) }, enabled = index < shown.lastIndex) {
-                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Move down")
+                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = stringResource(R.string.move_down))
                     }
                 }
             }
             item {
                 OutlinedButton(onClick = onEditApps, modifier = Modifier.padding(horizontal = 16.dp)) {
-                    Text("Edit apps")
+                    Text(stringResource(R.string.edit_apps))
                 }
             }
             item {
@@ -199,19 +198,19 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("Lock drawer icons", style = MaterialTheme.typography.titleMedium)
+                        Text(stringResource(R.string.lock_icons), style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "Stops long-press and drag from rearranging apps in the open drawer.",
+                            stringResource(R.string.lock_icons_text),
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
                     Switch(checked = settings.iconsLocked, onCheckedChange = onIconsLockedChange)
                 }
             }
-            item { SectionTitle("Handle") }
+            item { SectionTitle(stringResource(R.string.section_handle)) }
             item {
                 LabeledSlider(
-                    "Height",
+                    stringResource(R.string.handle_height),
                     value = settings.handleHeightDp.toFloat(),
                     range = MIN_HANDLE_HEIGHT_DP.toFloat()..MAX_HANDLE_HEIGHT_DP.toFloat(),
                     onChange = { onHeightChange(it.toInt()) },
@@ -219,7 +218,7 @@ fun SettingsScreen(
             }
             item {
                 LabeledSlider(
-                    "Opacity",
+                    stringResource(R.string.handle_opacity),
                     value = settings.handleAlpha,
                     range = HANDLE_ALPHA_RANGE,
                     onChange = onAlphaChange,
@@ -260,7 +259,7 @@ private fun PermissionCard(title: String, body: String, onGrant: () -> Unit) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text(body, style = MaterialTheme.typography.bodyMedium)
-            Button(onClick = onGrant) { Text("Allow") }
+            Button(onClick = onGrant) { Text(stringResource(R.string.allow)) }
         }
     }
 }

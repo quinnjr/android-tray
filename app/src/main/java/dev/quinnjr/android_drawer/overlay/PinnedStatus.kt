@@ -11,3 +11,33 @@ enum class PinnedStatus {
     /** The last reload failed; what's shown is from before it (opening the drawer retries). */
     FAILED,
 }
+
+/** What the drawer's pinned area shows (see [pinnedView]). */
+sealed interface PinnedView<out T> {
+    /** Loading, with nothing to show yet. */
+    data object Loading : PinnedView<Nothing>
+
+    /** Loading failed with nothing ever loaded to show (opening the drawer again retries). */
+    data object LoadFailed : PinnedView<Nothing>
+
+    /** Nothing to show: none pinned ([hasPinned] false), or the pinned apps are unavailable. */
+    data class NoApps(val hasPinned: Boolean) : PinnedView<Nothing>
+
+    /** The [apps], marked [reloading] while a reload runs. */
+    data class Grid<T>(val apps: List<T>, val reloading: Boolean) : PinnedView<T>
+}
+
+/**
+ * What to show for the pinned [apps] (null: nothing loaded, or loading failed with nothing to
+ * show) at [status], given whether any apps are pinned. A list that loaded empty because the apps
+ * are unavailable (e.g. a paused work profile) still says so after a failed reload; with none
+ * pinned, "no apps" stays put through reloads and failures alike.
+ */
+fun <T> pinnedView(apps: List<T>?, status: PinnedStatus, hasPinned: Boolean): PinnedView<T> = when {
+    !hasPinned && (apps != null || status != PinnedStatus.RELOADING) -> PinnedView.NoApps(hasPinned = false)
+    apps == null && status == PinnedStatus.FAILED -> PinnedView.LoadFailed
+    apps == null -> PinnedView.Loading
+    apps.isEmpty() && status == PinnedStatus.RELOADING -> PinnedView.Loading
+    apps.isEmpty() -> PinnedView.NoApps(hasPinned = true)
+    else -> PinnedView.Grid(apps, reloading = status == PinnedStatus.RELOADING)
+}

@@ -262,35 +262,26 @@ private fun Panel(
                     }
                 }
                 Box(Modifier.weight(1f)) {
-                    val pinned = apps.value
-                    val current = status.value
-                    when {
-                        // Loading failed with nothing ever loaded to show (null). Not the same as a
-                        // list that loaded empty because the apps are unavailable (e.g. a paused
-                        // work profile): a failed reload of that still says they're unavailable.
-                        pinned == null && current == PinnedStatus.FAILED && hasPinned.value -> Text(
+                    when (val view = pinnedView(apps.value, status.value, hasPinned.value)) {
+                        PinnedView.Loading -> CircularProgressIndicator(
+                            color = LABEL_COLOR,
+                            modifier = Modifier.align(Alignment.Center).size(32.dp),
+                        )
+                        PinnedView.LoadFailed -> Text(
                             stringResource(R.string.pinned_load_failed),
                             color = LABEL_COLOR,
                             textAlign = TextAlign.Center,
                             style = MaterialTheme.typography.bodyMedium,
                             modifier = Modifier.align(Alignment.Center).padding(24.dp),
                         )
-                        // None pinned: nothing to load, whatever the load did.
-                        pinned == null && current == PinnedStatus.FAILED -> NoApps(false, onOpenSettings, Modifier.fillMaxSize())
-                        // Nothing loaded yet (or only an empty list, while pinned apps are reloading;
-                        // with none pinned, "No apps yet" stays put through reloads).
-                        pinned == null || (pinned.isEmpty() && current == PinnedStatus.RELOADING && hasPinned.value) -> CircularProgressIndicator(
-                            color = LABEL_COLOR,
-                            modifier = Modifier.align(Alignment.Center).size(32.dp),
-                        )
-                        pinned.isEmpty() -> NoApps(hasPinned.value, onOpenSettings, Modifier.fillMaxSize())
-                        else -> {
+                        is PinnedView.NoApps -> NoApps(view.hasPinned, onOpenSettings, Modifier.fillMaxSize())
+                        is PinnedView.Grid -> {
                             // Stays composed while reloading (the last list is kept), so a press or
                             // drag under way and the scroll position survive (unless the list turns
                             // out empty: then there's nothing left to drag). Taps launch at once: an
                             // app gone meanwhile isn't started and says so. The status shows as a hint.
-                            PinnedGrid(pinned, iconsLocked, onLaunch, onReorder)
-                            if (current == PinnedStatus.RELOADING) {
+                            PinnedGrid(view.apps, iconsLocked, onLaunch, onReorder)
+                            if (view.reloading) {
                                 CircularProgressIndicator(
                                     color = LABEL_COLOR,
                                     strokeWidth = 2.dp,
