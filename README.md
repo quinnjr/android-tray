@@ -16,6 +16,11 @@ Requires JDK 21 and the Android SDK (`ANDROID_HOME`, platform 37).
 ./gradlew :app:assembleDebug       # app/build/outputs/apk/debug/app-debug.apk
 ```
 
+Or let GitHub build it: the **Build APK** workflow runs on pushes to `main`/`develop`, on pull
+requests, and by hand (*Actions → Build APK → Run workflow*, any branch). The debug APK is
+attached to the run as an artifact (`edge-drawer-<version>-<commit>-debug`), next to the test
+and lint reports.
+
 ## Install
 
 Enable *Developer options → Wireless debugging* on the phone, then:
