@@ -69,7 +69,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     val chosenApps: StateFlow<PinnedApps?> = combine(
         repo.settings.map { it.apps }.distinctUntilChanged(),
         // Only changes to pinned apps (or to many apps or a whole profile) matter here.
-        appChanges.reloads { pkg -> settings.value?.concernsPackage(pkg) ?: (pkg == null) },
+        appChanges.reloads { pkg -> repo.value.concernsPackage(pkg) },
         drawConfig.filterNotNull(),
     ) { keys, _, config -> keys to config }
         .mapLatest { (keys, config) ->

@@ -261,8 +261,9 @@ private fun Panel(
                         onRecentsNeeded()
                     }
                 }
+                val view = pinnedView(apps.value, status.value, hasPinned.value)
                 Box(Modifier.weight(1f)) {
-                    when (val view = pinnedView(apps.value, status.value, hasPinned.value)) {
+                    when (view) {
                         PinnedView.Loading -> CircularProgressIndicator(
                             color = LABEL_COLOR,
                             modifier = Modifier.align(Alignment.Center).size(32.dp),
@@ -292,7 +293,7 @@ private fun Panel(
                     }
                 }
                 // Its own line below the grid (not over its last row): a message, else a failed refresh.
-                val failedRefresh = status.value == PinnedStatus.FAILED && !apps.value.isNullOrEmpty()
+                val failedRefresh = view is PinnedView.Grid && view.failed
                 (notice.value ?: if (failedRefresh) { stringResource(R.string.pinned_refresh_failed) } else { null })?.let { text ->
                     Text(
                         text,
@@ -393,8 +394,13 @@ private fun PinnedGrid(
         val laidOut = gridState.layoutInfo.visibleItemsInfo.any { it.index == from && it.key == layoutKey }
         // By key, not index: the layout may still be a frame behind the list (e.g. after a reload).
         val to = appAt(pointer)?.let { info -> currentIndexByKey[info.key] } ?: return
-        if (laidOut && to != from) {
-            drag.order = current.moved(from, to).map { it.key }
+        val keys = drag.order
+        if (laidOut && to != from && keys != null) {
+            // Moved within the drag's own order (not the one on screen), so an app missing from
+            // the screen for a moment (e.g. mid-reload) keeps its place; one new on screen is
+            // added where it's shown, at the end.
+            val all = keys + current.map { it.key }.filter { it !in keys }
+            drag.order = all.moved(all.indexOf(key), all.indexOf(current[to].key))
         }
     }
 

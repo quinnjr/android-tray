@@ -34,6 +34,6 @@ class PinnedViewTest {
     fun `apps show as a grid, marked while reloading`() {
         assertEquals(PinnedView.Grid(one, reloading = false), pinnedView(one, PinnedStatus.CURRENT, hasPinned = true))
         assertEquals(PinnedView.Grid(one, reloading = true), pinnedView(one, PinnedStatus.RELOADING, hasPinned = true))
-        assertEquals(PinnedView.Grid(one, reloading = false), pinnedView(one, PinnedStatus.FAILED, hasPinned = true))
+        assertEquals(PinnedView.Grid(one, reloading = false, failed = true), pinnedView(one, PinnedStatus.FAILED, hasPinned = true))
     }
 }

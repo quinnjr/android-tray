@@ -123,12 +123,6 @@ class EdgeService : LifecycleService() {
     /** Recent apps with icons already drawn, so reopening the drawer doesn't redraw them. */
     private val recentIcons = DrawnAppCache(MAX_RECENT_ICONS)
     private var foreground = false
-        set(value) {
-            field = value
-            if (value) {
-                awaitingForeground = false
-            }
-        }
     /** Started through startForegroundService(), so startForeground() is mandatory. */
     private var foregroundRequired = false
     private var retryScheduled = false
@@ -355,12 +349,13 @@ class EdgeService : LifecycleService() {
                 }
                 if (result == LaunchResult.GONE) {
                     // As if the system had reported it: drop it from the caches, then reload. A
-                    // pinned one (maybe an earlier copy kept while it couldn't be listed) gets a
-                    // full retry, not just the one attempt a known unlisted app gets.
-                    onAppChanged(app.key.pkg)
+                    // pinned one (maybe an earlier copy kept while it couldn't be listed) gets one
+                    // full retry at once (no settle wait: it's a single, known change).
                     if (app.key in shownPinned.value?.keys.orEmpty()) {
+                        dropFromCaches(app.key.pkg)
                         retryPinned()
                     } else {
+                        onAppChanged(app.key.pkg)
                         recentRefresh.value++
                     }
                 }
@@ -419,16 +414,21 @@ class EdgeService : LifecycleService() {
 
     /** An app changed ([pkg]; null: several or a whole profile): drop it from the caches, reload if pinned. */
     private fun onAppChanged(pkg: String?) {
-        catalog.invalidate()
-        pinnedIcons.onAppChanged(pkg)
-        recentIcons.onAppChanged(pkg)
+        dropFromCaches(pkg)
         if (affectsPinned(pkg)) {
             pinnedAppsChanges.value++
         }
     }
 
+    /** Drops [pkg] (null: everything) from the cached launcher entries and icons. */
+    private fun dropFromCaches(pkg: String?) {
+        catalog.invalidate()
+        pinnedIcons.onAppChanged(pkg)
+        recentIcons.onAppChanged(pkg)
+    }
+
     /** Whether a change to [pkg] (null: several apps or a whole profile) concerns the pinned apps. */
-    private fun affectsPinned(pkg: String?): Boolean = latestSettings?.concernsPackage(pkg) ?: (pkg == null)
+    private fun affectsPinned(pkg: String?): Boolean = latestSettings.concernsPackage(pkg)
 
 
     private suspend fun recentApps(pinned: List<AppKey>): List<LaunchableApp> = withContext(Dispatchers.Default) {
@@ -467,10 +467,6 @@ class EdgeService : LifecycleService() {
             foregroundRequired = true
             if (!foreground) { foreground = tryStartForeground() }
         }
-        // Unless it was switched back on since (a start queued after this stop already ran).
-        if (intent?.action == ACTION_STOP && !(latestSettings?.enabled == true && Settings.canDrawOverlays(this))) {
-            stop()
-        }
         return super.onStartCommand(intent, flags, startId)
     }
 
@@ -480,7 +476,6 @@ class EdgeService : LifecycleService() {
     }
 
     override fun onDestroy() {
-        awaitingForeground = false
         stopObservingSettings()
         mainHandler.removeCallbacksAndMessages(null)
         appOps.stopWatchingMode(overlayPermissionListener)
@@ -541,51 +536,22 @@ class EdgeService : LifecycleService() {
         private const val EXTRA_CLOSE_REASON = "reason"
 
         private const val EXTRA_FOREGROUND_REQUIRED = "foreground_required"
-        private const val ACTION_STOP = "dev.quinnjr.android_drawer.action.STOP"
-
         /**
-         * Started through startForegroundService() and not yet foreground: stopping it from
-         * outside now would crash the app (the system requires startForeground() first).
+         * Starts the service if [enabled] and the overlay permission allow it. Never stopped from
+         * outside: it stops itself as soon as the settings (shared in this process, so it sees
+         * them at once) or the permission say so, going foreground first if it must (stopping one
+         * started through startForegroundService() before that would crash the app).
          */
-        @Volatile private var awaitingForeground = false
-
-        /** Starts or stops the service to match [enabled] and the overlay permission. */
         fun sync(context: Context, enabled: Boolean) {
             if (enabled && Settings.canDrawOverlays(context)) {
                 start(context)
-            } else {
-                stop(context)
             }
         }
 
         fun start(context: Context) {
-            awaitingForeground = true
-            try {
-                context.startForegroundService(
-                    Intent(context, EdgeService::class.java).putExtra(EXTRA_FOREGROUND_REQUIRED, true),
-                )
-            } catch (e: RuntimeException) {
-                // Never started, so nothing to wait for.
-                awaitingForeground = false
-                throw e
-            }
-        }
-
-        fun stop(context: Context) {
-            val intent = Intent(context, EdgeService::class.java)
-            if (!awaitingForeground) {
-                context.stopService(intent)
-                return
-            }
-            // Asked to stop itself instead, after its pending start (commands arrive in order),
-            // which goes foreground first.
-            try {
-                context.startService(intent.setAction(ACTION_STOP))
-            } catch (e: IllegalStateException) {
-                // Not allowed from the background; callers are in the foreground, but just in case.
-                Log.w(TAG, "Could not ask the edge handle to stop", e)
-                context.stopService(intent)
-            }
+            context.startForegroundService(
+                Intent(context, EdgeService::class.java).putExtra(EXTRA_FOREGROUND_REQUIRED, true),
+            )
         }
     }
 }

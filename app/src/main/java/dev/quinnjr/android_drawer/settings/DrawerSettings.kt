@@ -32,7 +32,7 @@ fun Float.toHandleAlpha(): Float = if (isNaN()) { HANDLE_ALPHA_RANGE.endInclusiv
  * Whether a change to [pkg] (null: several apps or a whole profile) concerns the pinned apps, so
  * they need reloading.
  */
-fun DrawerSettings.concernsPackage(pkg: String?): Boolean = pkg == null || apps.any { it.pkg == pkg }
+fun DrawerSettings?.concernsPackage(pkg: String?): Boolean = pkg == null || this?.apps.orEmpty().any { it.pkg == pkg }
 
 data class DrawerSettings(
     val enabled: Boolean = true,

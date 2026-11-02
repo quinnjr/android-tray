@@ -164,9 +164,10 @@ class SettingsRepository private constructor(context: Context) {
             val next = before?.let(transform)
             when {
                 before == null -> NOT_READ
-                // Nothing to do, unless an earlier change is still being saved: then this one's
-                // outcome is that save's (which may yet undo it).
+                // Nothing to do (no new revision, no write), unless an earlier change is still
+                // being saved: then this one's outcome is that save's (which may yet undo it).
                 next == before && version == onDiskVersion -> null
+                next == before -> version
                 else -> {
                     show(checkNotNull(next))
                     ++version

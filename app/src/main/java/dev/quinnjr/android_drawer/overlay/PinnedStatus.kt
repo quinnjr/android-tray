@@ -23,8 +23,8 @@ sealed interface PinnedView<out T> {
     /** Nothing to show: none pinned ([hasPinned] false), or the pinned apps are unavailable. */
     data class NoApps(val hasPinned: Boolean) : PinnedView<Nothing>
 
-    /** The [apps], marked [reloading] while a reload runs. */
-    data class Grid<T>(val apps: List<T>, val reloading: Boolean) : PinnedView<T>
+    /** The [apps], marked [reloading] while a reload runs, or [failed] if the last one failed. */
+    data class Grid<T>(val apps: List<T>, val reloading: Boolean, val failed: Boolean = false) : PinnedView<T>
 }
 
 /**
@@ -39,5 +39,5 @@ fun <T> pinnedView(apps: List<T>?, status: PinnedStatus, hasPinned: Boolean): Pi
     apps == null -> PinnedView.Loading
     apps.isEmpty() && status == PinnedStatus.RELOADING -> PinnedView.Loading
     apps.isEmpty() -> PinnedView.NoApps(hasPinned = true)
-    else -> PinnedView.Grid(apps, reloading = status == PinnedStatus.RELOADING)
+    else -> PinnedView.Grid(apps, reloading = status == PinnedStatus.RELOADING, failed = status == PinnedStatus.FAILED)
 }

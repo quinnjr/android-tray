@@ -285,7 +285,7 @@ typealias AppSource = (key: AppKey, make: () -> LaunchableApp) -> LaunchableApp
 
 /**
  * These app changes as reloads: a burst of [relevant] ones gives one once it settles, and there's
- * one to start. (The service's pinned apps settle their own way: see EdgeService.pinnedApps().)
+ * one to start. (The service's pinned apps settle their own way: see EdgeService.pinnedLoads().)
  */
 @OptIn(FlowPreview::class)
 fun Flow<String?>.reloads(relevant: (pkg: String?) -> Boolean = { true }): Flow<Unit> =
