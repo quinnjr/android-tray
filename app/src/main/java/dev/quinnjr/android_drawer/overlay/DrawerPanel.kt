@@ -74,6 +74,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
@@ -81,11 +82,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.toOffset
 import androidx.compose.ui.zIndex
+import dev.quinnjr.android_drawer.R
 import dev.quinnjr.android_drawer.apps.LaunchableApp
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.Side
-import androidx.compose.ui.res.stringResource
-import dev.quinnjr.android_drawer.R
 import dev.quinnjr.android_drawer.settings.arrangedBy
 import dev.quinnjr.android_drawer.settings.moved
 import dev.quinnjr.android_drawer.ui.AppIcon
@@ -523,8 +523,8 @@ private class GridDrag {
         private set
 
     fun begin(key: AppKey, apps: List<LaunchableApp>) {
-        order = apps.map { it.key }
         start = apps.map { it.key }
+        order = start
         this.key = key
     }
 

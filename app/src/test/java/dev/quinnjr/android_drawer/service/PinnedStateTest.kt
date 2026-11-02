@@ -92,4 +92,19 @@ class PinnedStateTest {
         assertNull(kept.load.ordered(listOf(a, b)))
         assertEquals(PinnedStatus.FAILED, kept.status(setOf(a, b)))
     }
+
+    @Test
+    fun `a failed reload with nothing kept for newly pinned apps is a failed load, not unavailable`() {
+        val emptyGood = null.keep(LoadedPinned(emptySet(), emptyMap<AppKey, String>()))
+        val kept = emptyGood.keep(load(a, failed = true))!!
+        assertNull(kept.load.ordered(listOf(a)))
+        assertEquals(PinnedStatus.FAILED, kept.status(setOf(a)))
+    }
+
+    @Test
+    fun `a failed reload of apps that loaded as unavailable keeps the empty list`() {
+        val unavailable = null.keep(LoadedPinned(setOf(a), emptyMap<AppKey, String>()))
+        val kept = unavailable.keep(load(a, failed = true))!!
+        assertEquals(emptyList<String>(), kept.load.ordered(listOf(a)))
+    }
 }

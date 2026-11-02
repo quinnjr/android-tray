@@ -28,7 +28,13 @@ internal data class KeptLoad<T>(val load: LoadedPinned<T>, val reloading: Boolea
 internal fun <T> KeptLoad<T>?.keep(next: LoadedPinned<T>?): KeptLoad<T>? = when {
     next == null -> this?.copy(reloading = true)
     // Failed with a good load to keep: keep it (minus apps unpinned since), noting this attempt.
-    next.apps == null && this?.load?.apps != null -> KeptLoad(load.restrictedTo(next.keys), failed = true)
+    // If that leaves nothing to show for apps it never covered (e.g. pinned since), it's a failed
+    // load (null), not a list of unavailable apps.
+    next.apps == null && this?.load?.apps != null -> {
+        val restricted = load.restrictedTo(next.keys)
+        val nothingFor = restricted.apps.isNullOrEmpty() && restricted.keys != next.keys
+        KeptLoad(if (nothingFor) { LoadedPinned(next.keys, null) } else { restricted }, failed = true)
+    }
     // Some apps still couldn't be listed (the load already retried them): their earlier copy, if
     // any, is kept rather than dropped. Only those with no copy to show make it a failure (so
     // opening the drawer tries again); launching a kept one just says it isn't available. With

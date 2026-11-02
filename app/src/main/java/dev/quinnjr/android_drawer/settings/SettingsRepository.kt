@@ -147,22 +147,31 @@ class SettingsRepository private constructor(context: Context) {
      * result says whether this change reached the disk. Each save writes the latest settings, so
      * saves finishing out of order never leave an older value on disk. If saving fails, it's tried
      * again with any later change made meanwhile; otherwise memory goes back to what is on disk.
-     * Saves complete even if the caller goes away. True at once if nothing changes; false at once
-     * if the settings haven't been read.
+     * Saves complete even if the caller goes away, and [onResult] (if given) is told the outcome
+     * then, on a background thread, even if its caller's scope is gone by then. True at once if
+     * nothing changes; false at once if the settings haven't been read.
      */
-    fun change(transform: (DrawerSettings) -> DrawerSettings): Deferred<Boolean> {
+    fun change(
+        transform: (DrawerSettings) -> DrawerSettings,
+        onResult: (saved: Boolean) -> Unit = {},
+    ): Deferred<Boolean> {
         val mine = synchronized(stateLock) {
-            val before = current.value?.settings ?: return CompletableDeferred(false)
+            val before = current.value?.settings ?: return done(false, onResult)
             val next = transform(before)
             // Nothing to do, unless an earlier change is still being saved: then this one's
             // outcome is that save's (which may yet undo it).
             if (next == before && version == onDiskVersion) {
-                return CompletableDeferred(true)
+                return done(true, onResult)
             }
             show(next)
             ++version
         }
-        return scope.async { writeLock.withLock { save(mine) } }
+        return scope.async { writeLock.withLock { save(mine) }.also(onResult) }
+    }
+
+    private fun done(saved: Boolean, onResult: (Boolean) -> Unit): Deferred<Boolean> {
+        onResult(saved)
+        return CompletableDeferred(saved)
     }
 
     /** Saves the latest settings unless change [mine] is already on disk or undone (under [writeLock]). */
@@ -211,7 +220,7 @@ class SettingsRepository private constructor(context: Context) {
      */
     suspend fun update(transform: (DrawerSettings) -> DrawerSettings): Boolean {
         withTimeoutOrNull(READ_WAIT_MS) { current.filterNotNull().first() } ?: return false
-        return change(transform).await()
+        return change(transform = transform).await()
     }
 
     private fun write(prefs: MutablePreferences, next: DrawerSettings) {

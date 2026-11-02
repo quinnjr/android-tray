@@ -113,6 +113,8 @@ class EdgeService : LifecycleService() {
      */
     private val settingsState = mutableStateOf<DrawerSettings?>(null)
     private var stopObservingSettings: () -> Unit = {}
+    /** Shows a message in the open drawer, if any (a toast would sit behind it). */
+    private var drawerNotice: ((String) -> Unit)? = null
     /** Bumped to reload the pinned apps after a failed load (e.g. when a drawer opens). */
     private val pinnedRetry = MutableStateFlow(0)
     /** What app labels and icons depend on; the caches are re-warmed when it changes. */
@@ -164,13 +166,8 @@ class EdgeService : LifecycleService() {
             context = overlayContext,
             onOpen = ::openDrawer,
             onHandleDropped = { side, fraction ->
-                lifecycleScope.launch {
-                    // The undo puts the handle back where it was (see repo.settings); say why (no
-                    // drawer is open to show it in).
-                    if (!repo.update { it.copy(side = side, yFraction = fraction) }) {
-                        toastSaveFailed()
-                    }
-                }
+                // If it can't be saved, the undo puts the handle back (see repo.settings).
+                repo.change(transform = { it.copy(side = side, yFraction = fraction) }, onResult = ::reportIfNotSaved)
             },
             onFatal = ::stop,
         )
@@ -279,13 +276,9 @@ class EdgeService : LifecycleService() {
         }
         // A failed load is retried whenever someone opens the drawer (e.g. LauncherApps wasn't
         // ready right after boot). (Not while a load is already running: that would only restart
-        // it.) It shows as reloading at once, in this drawer's first frame: the pinned flow only
-        // gets there a dispatch later, through the same keep(null) step applied here.
-        pinned.value?.let { p ->
-            if (p.status == PinnedStatus.FAILED) {
-                p.kept.keep(null)?.let { pinned.value = p.copy(kept = it) }
-                pinnedRetry.value++
-            }
+        // it.) It shows as reloading at once, in this drawer's first frame (see retryPinned()).
+        if (pinned.value?.status == PinnedStatus.FAILED) {
+            retryPinned()
         }
         // Recents depend on what was just used, so they're read on every open and fill in when
         // ready; until then the drawer keeps their space if it expects any.
@@ -321,6 +314,8 @@ class EdgeService : LifecycleService() {
                 notice.value = null
             }
         }
+        val noticeHere: (String) -> Unit = { showNotice(it) }
+        drawerNotice = noticeHere
         var recentLoad: Job? = null
         // A drawer that can't be shown is cleaned up by the host, which calls onClosed.
         host.openDrawer(
@@ -341,8 +336,13 @@ class EdgeService : LifecycleService() {
                     showNotice(getString(R.string.app_unavailable, app.label))
                 }
                 if (result == LaunchResult.GONE) {
-                    // As if the system had reported it: drop it from the caches, then reload.
+                    // As if the system had reported it: drop it from the caches, then reload. A
+                    // pinned one (maybe an earlier copy kept while it couldn't be listed) gets a
+                    // full retry, not just the one attempt a known unlisted app gets.
                     onAppChanged(app.key.pkg)
+                    if (app.key in shownPinned.value?.keys.orEmpty()) {
+                        retryPinned()
+                    }
                     if (app.key !in shownPinned.value?.keys.orEmpty()) {
                         recentRefresh.value++
                     }
@@ -352,25 +352,18 @@ class EdgeService : LifecycleService() {
             onReorder = { shownOrder ->
                 // The settings take it at once (saving in the background, and reverting it if that
                 // fails), and so does the order shown (see settingsState).
-                val saved = repo.change { it.copy(apps = it.apps.withVisibleOrder(shownOrder)) }
-                // Not tied to this drawer, nor to the service: a drag saved as the drawer closes (or
-                // the service stops) still reports failure.
-                saved.invokeOnCompletion { error ->
-                    if (error == null && !saved.getCompleted()) {
-                        ContextCompat.getMainExecutor(applicationContext).execute {
-                            if (drawerJob.isActive) {
-                                showNotice(getString(R.string.settings_save_failed))
-                            } else {
-                                applicationContext.toastSaveFailed()
-                            }
-                        }
-                    }
-                }
+                // Reported even if this drawer, or the service, is gone by then.
+                repo.change(transform = { it.copy(apps = it.apps.withVisibleOrder(shownOrder)) }, onResult = ::reportIfNotSaved)
             },
             onOpenSettings = {
                 startActivity(Intent(this@EdgeService, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             },
-            onClosed = { drawerJob.cancel() },
+            onClosed = {
+                drawerJob.cancel()
+                if (drawerNotice === noticeHere) {
+                    drawerNotice = null
+                }
+            },
             // Only once the drawer has laid out room for them (none in a short landscape drawer).
             onRecentsNeeded = {
                 if (expectRecents && recentLoad?.isActive != true) {
@@ -384,6 +377,29 @@ class EdgeService : LifecycleService() {
                 }
             },
         )
+    }
+
+    /**
+     * Says a change couldn't be saved (it has been undone): in the open drawer if there is one,
+     * else as a toast. Called from any thread, maybe after this drawer or the service is gone.
+     */
+    private fun reportIfNotSaved(saved: Boolean) {
+        if (saved) {
+            return
+        }
+        ContextCompat.getMainExecutor(applicationContext).execute {
+            drawerNotice?.invoke(getString(R.string.settings_save_failed)) ?: applicationContext.toastSaveFailed()
+        }
+    }
+
+    /**
+     * Retries loading the pinned apps, showing that at once: the reloading state is set here
+     * through the flow's own first step, keep(null), which the flow then applies itself a
+     * dispatch later (so they agree), and the reload is triggered.
+     */
+    private fun retryPinned() {
+        pinned.value?.let { p -> p.kept.keep(null)?.let { pinned.value = p.copy(kept = it) } }
+        pinnedRetry.value++
     }
 
     /** An app changed ([pkg]; null: several or a whole profile): drop it from the caches, reload if pinned. */
