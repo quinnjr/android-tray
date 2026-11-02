@@ -21,6 +21,29 @@ requests, and by hand (*Actions → Build APK → Run workflow*, any branch). Th
 attached to the run as an artifact (`edge-drawer-<version>-<commit>-debug`), next to the test
 and lint reports.
 
+### Production build
+
+The release build is shrunk with R8 and signed with your release key, read from the environment
+so it never enters the repository. In CI it comes from four repository secrets:
+
+| Secret | Value |
+| --- | --- |
+| `RELEASE_KEYSTORE_BASE64` | the keystore file, base64-encoded (`base64 -w0 release.jks`) |
+| `RELEASE_KEYSTORE_PASSWORD` | the keystore password |
+| `RELEASE_KEY_ALIAS` | the key's alias |
+| `RELEASE_KEY_PASSWORD` | the key's password |
+
+Create a key once (keep the file and passwords safe: updates must be signed with the same key):
+
+```sh
+keytool -genkeypair -keystore release.jks -alias edge-drawer -keyalg RSA -keysize 4096 -validity 10000
+```
+
+The workflow's release job then builds the signed APK and an AAB (for Google Play) on pushes to
+`main`, on manual runs and on version tags; pushing a tag like `v0.1.0` also publishes the APK as a
+GitHub release. Locally, set `RELEASE_KEYSTORE_PATH` (to the `.jks` file) and the three other
+variables, then run `./gradlew assembleRelease bundleRelease`.
+
 ## Install
 
 Enable *Developer options → Wireless debugging* on the phone, then:
