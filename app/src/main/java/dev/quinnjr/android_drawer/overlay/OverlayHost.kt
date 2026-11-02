@@ -45,6 +45,8 @@ class OverlayHost(
         .apply { gravity = Gravity.TOP or Gravity.START }
     /** Scratch copy of [handleParams], reused: to tell whether showHandle() changed them. */
     private val handleParamsBefore = WindowManager.LayoutParams()
+    /** The last update of the handle's window failed, so it may not match [handleParams]. */
+    private var handleStale = false
 
     private var drawer: DrawerWindowView? = null
     private var drawerOwner: OverlayLifecycleOwner? = null
@@ -60,7 +62,7 @@ class OverlayHost(
     private var watching = false
 
     val handleWidthPx get() = (HANDLE_TOUCH_WIDTH_DP * density).toInt()
-    val handleHeightPx get() = (clampHandleHeightDp(settings?.handleHeightDp ?: DEFAULT_SETTINGS.handleHeightDp) * density).toInt()
+    val handleHeightPx get() = ((settings ?: DEFAULT_SETTINGS).handleHeightDp * density).toInt()
     /** Open and not closing: during the exit animation the handle is back and can reopen it. */
     val isDrawerOpen get() = drawer != null && drawerState?.targetState == true
 
@@ -91,7 +93,7 @@ class OverlayHost(
         applyHandleVisibility(updateWindow = false)
         if (view !in added) {
             add(view, handleParams)
-        } else if (handleParamsBefore.copyFrom(handleParams) != 0) {
+        } else if (handleParamsBefore.copyFrom(handleParams) != 0 || handleStale) {
             // copyFrom() reports which of the window's attributes differ (any at all, so a field
             // set elsewhere later is covered too), without allocating.
             update(view, handleParams)
@@ -354,30 +356,36 @@ class OverlayHost(
         added += view
     }
 
-    private fun update(view: View, params: WindowManager.LayoutParams) = guard {
-        if (view in added) { wm.updateViewLayout(view, params) }
+    private fun update(view: View, params: WindowManager.LayoutParams) {
+        val ok = guard {
+            if (view in added) { wm.updateViewLayout(view, params) }
+        }
+        // A failed handle update is sent again by the next showHandle(), changed or not.
+        if (view === handle) {
+            handleStale = !ok
+        }
     }
 
     private fun remove(view: View) = guard {
         if (added.remove(view)) { wm.removeViewImmediate(view) }
     }
 
-    private inline fun guard(block: () -> Unit) {
+    /** Runs a window operation; false (after reporting it) if the system rejected it. */
+    private inline fun guard(block: () -> Unit): Boolean {
         try {
             block()
+            return true
         } catch (e: WindowManager.BadTokenException) {
             Log.e(TAG, "Overlay window rejected", e)
-            onFatal()
         } catch (e: SecurityException) {
             Log.e(TAG, "Overlay permission missing", e)
-            onFatal()
         } catch (e: IllegalStateException) {
             Log.e(TAG, "Overlay window in a bad state", e)
-            onFatal()
         } catch (e: IllegalArgumentException) {
             Log.e(TAG, "Overlay window not attached", e)
-            onFatal()
         }
+        onFatal()
+        return false
     }
 }
 

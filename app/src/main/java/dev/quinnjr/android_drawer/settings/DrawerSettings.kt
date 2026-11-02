@@ -22,11 +22,29 @@ data class AppKey(val component: String, val userSerial: Long) {
     }
 }
 
+/** Android caps system-gesture exclusion at 200dp per edge, so the handle may not be taller. */
+const val MAX_HANDLE_HEIGHT_DP = 200
+const val MIN_HANDLE_HEIGHT_DP = 60
+
+fun clampHandleHeightDp(dp: Int): Int = dp.coerceIn(MIN_HANDLE_HEIGHT_DP, MAX_HANDLE_HEIGHT_DP)
+
 /** Allowed handle opacity: never fully invisible, so it can still be found. */
 val HANDLE_ALPHA_RANGE = 0.2f..1f
 
 /** This opacity, kept within [HANDLE_ALPHA_RANGE] (NaN, which no range comparison catches, counts as opaque). */
-fun Float.toHandleAlpha(): Float = if (isNaN()) { HANDLE_ALPHA_RANGE.endInclusive } else { coerceIn(HANDLE_ALPHA_RANGE) }
+private fun Float.toHandleAlpha(): Float = if (isNaN()) { HANDLE_ALPHA_RANGE.endInclusive } else { coerceIn(HANDLE_ALPHA_RANGE) }
+
+/**
+ * These settings within what the settings screen allows (handle opacity, height and position),
+ * whatever they came from: a file written by an older version or restored, or any change. The
+ * repository applies it to everything it reads and every change, so the rest of the app can
+ * rely on it.
+ */
+fun DrawerSettings.sanitized(): DrawerSettings = copy(
+    yFraction = if (yFraction.isNaN()) { DrawerSettings().yFraction } else { yFraction.coerceIn(0f, 1f) },
+    handleHeightDp = clampHandleHeightDp(handleHeightDp),
+    handleAlpha = handleAlpha.toHandleAlpha(),
+)
 
 /**
  * Whether a change to [pkg] (null: several apps or a whole profile) concerns the pinned apps, so
@@ -83,7 +101,7 @@ internal fun decodeApps(s: String): List<AppKey> = s.lineSequence().mapNotNull(A
 
 /**
  * These items arranged by [order] (matched by [key]): keys in [order] without an item are skipped,
- * and items whose key isn't in [order] come after, in their own order (cf. [valuesIn], which drops them).
+ * and items whose key isn't in [order] come after, in their own order.
  */
 internal fun <T, K> List<T>.arrangedBy(order: List<K>, key: (T) -> K): List<T> {
     val byKey = associateBy(key)
@@ -92,4 +110,4 @@ internal fun <T, K> List<T>.arrangedBy(order: List<K>, key: (T) -> K): List<T> {
 }
 
 /** The values for the keys in [order], in that order; keys without a value are skipped (others dropped). */
-internal fun <K, V> Map<K, V>.valuesIn(order: List<K>): List<V> = order.mapNotNull(::get)
+

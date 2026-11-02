@@ -46,14 +46,17 @@ import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.concernsPackage
-import dev.quinnjr.android_drawer.settings.toastSaveFailed
 import dev.quinnjr.android_drawer.settings.withVisibleOrder
 import dev.quinnjr.android_drawer.ui.MainActivity
+import dev.quinnjr.android_drawer.ui.shouldReportSaveFailure
+import dev.quinnjr.android_drawer.ui.toastSaveFailed
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -198,6 +201,13 @@ class EdgeService : LifecycleService() {
                 }
             }
         }
+        lifecycleScope.launch {
+            recheck.collect {
+                if (latestSettings?.enabled == false || !Settings.canDrawOverlays(this@EdgeService)) {
+                    stop()
+                }
+            }
+        }
         // Any app change invalidates the cached launcher entries and that app's icons, at once.
         lifecycleScope.launch {
             appsChanged(this@EdgeService).collect(::onAppChanged)
@@ -222,7 +232,7 @@ class EdgeService : LifecycleService() {
         // The apps the last load couldn't list, and the retries asked for by then (see below).
         var lastUnknown = emptySet<AppKey>()
         var lastRetry = pinnedRetry.value
-        val loaded: Flow<LoadedPinned<LaunchableApp>?> = combine(
+        return combine(
             keys.map { it.toSet() }.distinctUntilChanged(),
             pinnedAppsChanges,
             displayConfig.filterNotNull(),
@@ -261,7 +271,6 @@ class EdgeService : LifecycleService() {
                 lastRetry = retry
                 emit(LoadedPinned(set, apps?.apps?.associateBy { it.key }, unknown = apps?.unknown.orEmpty()))
             }
-        return loaded
     }
 
     /**
@@ -401,8 +410,12 @@ class EdgeService : LifecycleService() {
         }
         ContextCompat.getMainExecutor(applicationContext).execute {
             // Not into a drawer already closing: it can't be read there.
-            drawerNotice?.takeIf { host.isDrawerOpen }?.invoke(getString(R.string.settings_save_failed))
-                ?: applicationContext.toastSaveFailed()
+            val drawer = drawerNotice?.takeIf { host.isDrawerOpen }
+            if (drawer == null) {
+                applicationContext.toastSaveFailed()
+            } else if (shouldReportSaveFailure()) {
+                drawer(getString(R.string.settings_save_failed))
+            }
         }
     }
 
@@ -415,7 +428,7 @@ class EdgeService : LifecycleService() {
     /** An app changed ([pkg]; null: several or a whole profile): drop it from the caches, reload if pinned. */
     private fun onAppChanged(pkg: String?) {
         dropFromCaches(pkg)
-        if (affectsPinned(pkg)) {
+        if (latestSettings.concernsPackage(pkg)) {
             pinnedAppsChanges.value++
         }
     }
@@ -426,9 +439,6 @@ class EdgeService : LifecycleService() {
         pinnedIcons.onAppChanged(pkg)
         recentIcons.onAppChanged(pkg)
     }
-
-    /** Whether a change to [pkg] (null: several apps or a whole profile) concerns the pinned apps. */
-    private fun affectsPinned(pkg: String?): Boolean = latestSettings.concernsPackage(pkg)
 
 
     private suspend fun recentApps(pinned: List<AppKey>): List<LaunchableApp> = withContext(Dispatchers.Default) {
@@ -545,8 +555,15 @@ class EdgeService : LifecycleService() {
         fun sync(context: Context, enabled: Boolean) {
             if (enabled && Settings.canDrawOverlays(context)) {
                 start(context)
+            } else {
+                // A running service checks again for itself (e.g. the permission was revoked and
+                // its listener missed it), and stops itself if it should.
+                recheck.tryEmit(Unit)
             }
         }
+
+        /** Asks a running service to check whether it should still run (see sync()). */
+        private val recheck = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
         fun start(context: Context) {
             context.startForegroundService(

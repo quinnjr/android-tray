@@ -399,7 +399,8 @@ private fun PinnedGrid(
             // Moved within the drag's own order (not the one on screen), so an app missing from
             // the screen for a moment (e.g. mid-reload) keeps its place; one new on screen is
             // added where it's shown, at the end.
-            val all = keys + current.map { it.key }.filter { it !in keys }
+            val inDrag = keys.toHashSet()
+            val all = keys + current.map { it.key }.filter { it !in inDrag }
             drag.order = all.moved(all.indexOf(key), all.indexOf(current[to].key))
         }
     }

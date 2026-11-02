@@ -2,7 +2,6 @@ package dev.quinnjr.android_drawer.service
 
 import dev.quinnjr.android_drawer.overlay.PinnedStatus
 import dev.quinnjr.android_drawer.settings.AppKey
-import dev.quinnjr.android_drawer.settings.valuesIn
 
 /**
  * The apps loaded for a set of pinned [keys]: [apps] null if the load failed outright; [unknown]
@@ -10,7 +9,7 @@ import dev.quinnjr.android_drawer.settings.valuesIn
  */
 internal class LoadedPinned<T>(val keys: Set<AppKey>, val apps: Map<AppKey, T>?, val unknown: Set<AppKey> = emptySet()) {
     /** These apps in [order] (keys not loaded are left out); null if the load failed. */
-    fun ordered(order: List<AppKey>): List<T>? = apps?.valuesIn(order)
+    fun ordered(order: List<AppKey>): List<T>? = apps?.let { a -> order.mapNotNull(a::get) }
 
     /** Only the apps among [keys] (dropping those unpinned since, and their icons). */
     fun restrictedTo(keys: Set<AppKey>) =

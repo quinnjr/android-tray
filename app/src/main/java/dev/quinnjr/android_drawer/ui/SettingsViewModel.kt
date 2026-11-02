@@ -12,15 +12,15 @@ import dev.quinnjr.android_drawer.apps.appsChanged
 import dev.quinnjr.android_drawer.apps.orOnFailure
 import dev.quinnjr.android_drawer.apps.reloads
 import dev.quinnjr.android_drawer.apps.resolveDrawn
-import dev.quinnjr.android_drawer.overlay.clampHandleHeightDp
 import dev.quinnjr.android_drawer.service.EdgeService
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.SettingsRepository
 import dev.quinnjr.android_drawer.settings.concernsPackage
 import dev.quinnjr.android_drawer.settings.movedAmongShown
-import dev.quinnjr.android_drawer.settings.toHandleAlpha
 import kotlinx.coroutines.Dispatchers
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableStateOf
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -57,8 +57,20 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     /** Emits when a change couldn't be saved (and so was undone); collect from one place. */
     val saveFailures: Flow<Unit> = failedSaves.receiveAsFlow()
 
-    /** The settings; null until first read. */
-    val settings: StateFlow<DrawerSettings?> = repo.settings.stateIn(viewModelScope, SharingStarted.Eagerly, repo.value)
+    private val settingsState = mutableStateOf<DrawerSettings?>(null)
+
+    /**
+     * The settings (null until first read), as Compose state kept in step with the repository
+     * itself: every change shows at once, and so does the undo of one that couldn't be saved,
+     * even straight after it (a flow would merge the two into no change at all).
+     */
+    val settings: State<DrawerSettings?> get() = settingsState
+
+    private val stopObservingSettings = repo.observe { settingsState.value = it }
+
+    override fun onCleared() {
+        stopObservingSettings()
+    }
 
     /** App changes, watched for as long as this ViewModel lives so [icons] never misses one. */
     private val appChanges: Flow<String?> = appsChanged(app)
@@ -119,8 +131,9 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         val shown = chosenApps.value?.apps?.mapTo(HashSet()) { it.key } ?: return
         update { it.copy(apps = it.apps.movedAmongShown(shown, key, delta)) }
     }
-    fun setHeight(dp: Int) = update { it.copy(handleHeightDp = clampHandleHeightDp(dp)) }
-    fun setAlpha(alpha: Float) = update { it.copy(handleAlpha = alpha.toHandleAlpha()) }
+    // Kept within range by the repository (see DrawerSettings.sanitized()).
+    fun setHeight(dp: Int) = update { it.copy(handleHeightDp = dp) }
+    fun setAlpha(alpha: Float) = update { it.copy(handleAlpha = alpha) }
     fun setColor(color: Long) = update { it.copy(handleColor = color) }
     fun setIconsLocked(locked: Boolean) = update { it.copy(iconsLocked = locked) }
 

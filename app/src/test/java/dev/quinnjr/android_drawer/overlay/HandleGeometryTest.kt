@@ -1,6 +1,7 @@
 package dev.quinnjr.android_drawer.overlay
 
 import dev.quinnjr.android_drawer.settings.Side
+import dev.quinnjr.android_drawer.settings.clampHandleHeightDp
 import org.junit.Assert.assertEquals
 import org.junit.Test
 

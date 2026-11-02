@@ -80,8 +80,8 @@ class AppCatalog(context: Context) {
 
     /**
      * The apps for [keys], in order, and which keys are unavailable (locked, paused or removed
-     * profile; app uninstalled). An app that merely failed to load (its package couldn't be
-     * listed, or its icon or label couldn't be made) is unknown instead. Apps [cached]
+     * profile; app uninstalled). An app whose package merely couldn't be listed is unknown
+     * instead. Apps [cached]
      * already has are used as they are; for the rest only their packages are listed (not every
      * installed app), and they're made through [obtain].
      */
@@ -118,12 +118,11 @@ class AppCatalog(context: Context) {
                 }
             }
         }
+        // One whose icon or label can't be made is still shown (blank icon, a fallback label;
+        // not cached, so it's tried again next load): it's pinned, and still launchable.
         val apps = shown.mapNotNull { key ->
             known[key] ?: found[key]?.let { info ->
-                obtainOrSkip(obtain, key) { info.toApp(key) } ?: run {
-                    unknown += key
-                    null
-                }
+                obtainOrSkip(obtain, key) { info.toApp(key) } ?: info.toPlainApp(key)
             }
         }
         val unavailable = keys.filterTo(HashSet()) { it.userSerial !in available || (it !in known && it !in found && it !in unknown) }
@@ -227,6 +226,15 @@ class AppCatalog(context: Context) {
                 .getOrDefault(emptyList())
                 .map { info -> AppKey(info.componentName.flattenToString(), serial) to info }
         }
+
+    /** [toApp] without an icon, and with the package name if even the label can't be read. */
+    private fun LauncherActivityInfo.toPlainApp(key: AppKey) = LaunchableApp(
+        key = key,
+        label = runCatching { label.toString() }.getOrDefault(componentName.packageName),
+        icon = null,
+        component = componentName,
+        user = user,
+    )
 
     private fun LauncherActivityInfo.toApp(key: AppKey) = LaunchableApp(
         key = key,

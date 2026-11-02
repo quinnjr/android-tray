@@ -33,7 +33,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -44,8 +44,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import dev.quinnjr.android_drawer.R
 import dev.quinnjr.android_drawer.apps.AppCatalog
-import dev.quinnjr.android_drawer.overlay.MAX_HANDLE_HEIGHT_DP
-import dev.quinnjr.android_drawer.overlay.MIN_HANDLE_HEIGHT_DP
+import dev.quinnjr.android_drawer.settings.MAX_HANDLE_HEIGHT_DP
+import dev.quinnjr.android_drawer.settings.MIN_HANDLE_HEIGHT_DP
 import dev.quinnjr.android_drawer.settings.AppKey
 import dev.quinnjr.android_drawer.settings.DrawerSettings
 import dev.quinnjr.android_drawer.settings.HANDLE_ALPHA_RANGE
@@ -276,14 +276,18 @@ private fun SectionTitle(text: String) {
 
 @Composable
 private fun LabeledSlider(label: String, value: Float, range: ClosedFloatingPointRange<Float>, onChange: (Float) -> Unit) {
-    // The thumb follows the finger locally; the setting is saved once, on release.
-    var current by remember(value) { mutableFloatStateOf(value) }
+    // While dragged the thumb follows the finger locally; the setting is saved once, on release.
+    // Otherwise it shows the setting, so an undone change (it couldn't be saved) shows too.
+    var dragged by remember { mutableStateOf<Float?>(null) }
     Column(Modifier.padding(horizontal = 16.dp)) {
         Text(label, style = MaterialTheme.typography.bodyLarge)
         Slider(
-            value = current.coerceIn(range),
-            onValueChange = { current = it },
-            onValueChangeFinished = { onChange(current) },
+            value = (dragged ?: value).coerceIn(range),
+            onValueChange = { dragged = it },
+            onValueChangeFinished = {
+                dragged?.let(onChange)
+                dragged = null
+            },
             valueRange = range,
         )
     }

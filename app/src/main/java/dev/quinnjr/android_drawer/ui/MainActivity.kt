@@ -30,7 +30,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.quinnjr.android_drawer.apps.RecentApps
-import dev.quinnjr.android_drawer.settings.toastSaveFailed
 import dev.quinnjr.android_drawer.ui.theme.AppTheme
 
 class MainActivity : ComponentActivity() {
@@ -43,7 +42,7 @@ class MainActivity : ComponentActivity() {
         vm.setConfiguration(resources.configuration)
         setContent {
             AppTheme {
-                val settings by vm.settings.collectAsStateWithLifecycle()
+                val settings by vm.settings
                 var canDrawOverlays by remember { mutableStateOf(Settings.canDrawOverlays(this)) }
                 var notificationsGranted by remember { mutableStateOf(notificationsGranted()) }
                 var usageAccessGranted by remember { mutableStateOf(recents.hasAccess()) }

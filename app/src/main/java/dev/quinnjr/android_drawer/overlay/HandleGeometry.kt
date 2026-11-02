@@ -3,12 +3,6 @@ package dev.quinnjr.android_drawer.overlay
 import dev.quinnjr.android_drawer.settings.Side
 import kotlin.math.roundToInt
 
-/** Android caps system-gesture exclusion at 200dp per edge, so the handle may not be taller. */
-const val MAX_HANDLE_HEIGHT_DP = 200
-const val MIN_HANDLE_HEIGHT_DP = 60
-
-fun clampHandleHeightDp(dp: Int): Int = dp.coerceIn(MIN_HANDLE_HEIGHT_DP, MAX_HANDLE_HEIGHT_DP)
-
 /** How far the handle's top can move: the screen between the top and bottom system bars. */
 private fun verticalRange(screenHeight: Int, handleHeight: Int, insetTop: Int, insetBottom: Int): Int =
     (screenHeight - insetTop - insetBottom - handleHeight).coerceAtLeast(0)

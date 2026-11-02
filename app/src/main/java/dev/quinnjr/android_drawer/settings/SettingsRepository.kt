@@ -2,7 +2,6 @@ package dev.quinnjr.android_drawer.settings
 
 import android.content.Context
 import android.util.Log
-import android.widget.Toast
 import androidx.datastore.core.DataStore
 import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.MutablePreferences
@@ -15,9 +14,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import dev.quinnjr.android_drawer.R
 import dev.quinnjr.android_drawer.TAG
-import dev.quinnjr.android_drawer.overlay.clampHandleHeightDp
 import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CancellationException
@@ -44,11 +41,6 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
     "drawer_settings",
     corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
 )
-
-/** Says a change couldn't be saved (it has been undone). */
-fun Context.toastSaveFailed() {
-    Toast.makeText(this, R.string.settings_save_failed, Toast.LENGTH_SHORT).show()
-}
 
 /**
  * The app's settings: one instance per process ([get]), holding them in memory. A change is applied
@@ -148,8 +140,8 @@ class SettingsRepository private constructor(context: Context) {
     /**
      * Applies [transform] to the settings now (every reader sees it at once) and saves them; the
      * result says whether this change reached the disk. Each save writes the latest settings, so
-     * saves finishing out of order never leave an older value on disk. If saving fails, it's tried
-     * again with any later change made meanwhile; otherwise memory goes back to what is on disk.
+     * saves finishing out of order never leave an older value on disk. If saving fails, memory goes
+     * back to what is on disk (every unsaved change is undone). The change is [sanitized] first.
      * Saves complete even if the caller goes away, and [onResult] (if given) is told the outcome
      * then, on a background thread, even if its caller's scope is gone by then. True at once if
      * nothing changes; false at once if the settings haven't been read.
@@ -161,7 +153,7 @@ class SettingsRepository private constructor(context: Context) {
         // Worked out under the lock; [onResult] only ever runs outside it.
         val mine: Long? = synchronized(stateLock) {
             val before = current.value?.settings
-            val next = before?.let(transform)
+            val next = before?.let(transform)?.sanitized()
             when {
                 before == null -> NOT_READ
                 // Nothing to do (no new revision, no write), unless an earlier change is still
@@ -211,17 +203,16 @@ class SettingsRepository private constructor(context: Context) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Could not save settings", e)
+                // Not retried (with a full disk, say, it would only fail again): back to what's on
+                // disk, undoing every change not saved yet, including any made meanwhile (their
+                // own saves then report failure without trying).
                 synchronized(stateLock) {
-                    // Nothing newer to try: back to what's on disk.
-                    if (version == nextVersion) {
-                        show(checkNotNull(onDisk), undo = true)
-                        undoneThrough = nextVersion
-                        // Memory matches the disk again: nothing pending.
-                        onDiskVersion = nextVersion
-                        return false
-                    }
+                    show(checkNotNull(onDisk), undo = true)
+                    undoneThrough = version
+                    // Memory matches the disk again: nothing pending.
+                    onDiskVersion = version
                 }
-                // A later change came in meanwhile: try again with it.
+                return false
             }
         }
     }
@@ -251,15 +242,13 @@ class SettingsRepository private constructor(context: Context) {
         return DrawerSettings(
             enabled = this[ENABLED] ?: defaults.enabled,
             side = this[SIDE]?.let { runCatching { Side.valueOf(it) }.getOrNull() } ?: defaults.side,
-            // Kept within what the settings screen allows, whatever the file says (e.g. written
-            // by an older version, or restored).
-            yFraction = this[Y_FRACTION]?.takeUnless { it.isNaN() }?.coerceIn(0f, 1f) ?: defaults.yFraction,
-            handleHeightDp = this[HEIGHT]?.let(::clampHandleHeightDp) ?: defaults.handleHeightDp,
-            handleAlpha = this[ALPHA]?.toHandleAlpha() ?: defaults.handleAlpha,
+            yFraction = this[Y_FRACTION] ?: defaults.yFraction,
+            handleHeightDp = this[HEIGHT] ?: defaults.handleHeightDp,
+            handleAlpha = this[ALPHA] ?: defaults.handleAlpha,
             handleColor = this[COLOR] ?: defaults.handleColor,
             apps = this[APPS]?.let(::decodeApps) ?: defaults.apps,
             iconsLocked = this[ICONS_LOCKED] ?: defaults.iconsLocked,
-        )
+        ).sanitized()
     }
 
     companion object {
