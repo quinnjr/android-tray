@@ -65,7 +65,7 @@ class OverlayHost(
     /** Shows the handle as [s] says; the window is only updated if that moves or resizes it. */
     fun showHandle(s: DrawerSettings) {
         settings = s
-        val before = handleParams.layoutKey()
+        val before = WindowManager.LayoutParams().apply { copyFrom(handleParams) }
         val view = handle ?: HandleView(
             context,
             onOpen = onOpen,
@@ -89,7 +89,8 @@ class OverlayHost(
         applyHandleVisibility(updateWindow = false)
         if (view !in added) {
             add(view, handleParams)
-        } else if (handleParams.layoutKey() != before) {
+        } else if (before.copyFrom(handleParams) != 0) {
+            // copyFrom() reports which of the window's attributes differ: any at all.
             update(view, handleParams)
         }
         if (!watching) {
@@ -349,9 +350,6 @@ class OverlayHost(
         wm.addView(view, params)
         added += view
     }
-
-    /** What a window update would change about a window's placement and visibility. */
-    private fun WindowManager.LayoutParams.layoutKey() = listOf(x, y, width, height, gravity, flags, alpha)
 
     private fun update(view: View, params: WindowManager.LayoutParams) = guard {
         if (view in added) { wm.updateViewLayout(view, params) }

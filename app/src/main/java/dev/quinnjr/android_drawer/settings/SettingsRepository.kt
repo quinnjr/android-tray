@@ -31,7 +31,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -61,12 +61,15 @@ class SettingsRepository private constructor(context: Context) {
     private val writeLock = Mutex()
     private val stateLock = Any()
 
-    /** One state of the settings in memory; each is new ([n]), even one equal to an earlier one. */
-    private class Revision(val settings: DrawerSettings, val n: Long)
+    /**
+     * One state of the settings in memory: [undo] if it went back to the disk's after a save
+     * failed. A plain class, so each one is new to the StateFlow even if equal to an earlier one.
+     */
+    private class Revision(val settings: DrawerSettings, val undo: Boolean = false)
 
     private val current = MutableStateFlow<Revision?>(null)
-    /** Counts the [Revision]s (under [stateLock]). */
-    private var revisions = 0L
+    /** Declared before init, which may already call them (see show()). */
+    private val observers = CopyOnWriteArrayList<(DrawerSettings) -> Unit>()
     /** Counts changes made in memory (under [stateLock]); [onDiskVersion] has caught up when none is pending. */
     private var version = 0L
     /** The settings as last read from or written to disk, and the [version] they were (under [stateLock]). */
@@ -79,11 +82,20 @@ class SettingsRepository private constructor(context: Context) {
     val value: DrawerSettings? get() = current.value?.settings
 
     /**
-     * The settings as they change (after the first read). Every change is delivered, including
-     * one undone after its save failed: going back to an earlier value is a change too, so anyone
-     * who showed the failed one ahead of time (e.g. a dragged handle) is put back.
+     * The settings as they change (after the first read): each value that differs from the one
+     * last delivered to this collector, and every undo of a failed save, even back to a value it
+     * already has (it may have missed the failed one, and still be showing it ahead of time,
+     * e.g. a dragged handle).
      */
-    val settings: Flow<DrawerSettings> = current.filterNotNull().map { it.settings }
+    val settings: Flow<DrawerSettings> = flow {
+        var last: DrawerSettings? = null
+        current.filterNotNull().collect { revision ->
+            if (revision.undo || revision.settings != last) {
+                last = revision.settings
+                emit(revision.settings)
+            }
+        }
+    }
 
     init {
         // A read error is retried with backoff (up to every 30s) for as long as it lasts rather
@@ -112,12 +124,10 @@ class SettingsRepository private constructor(context: Context) {
     }
 
     /** Makes [settings] the current ones, as a new revision (under [stateLock]). */
-    private fun show(settings: DrawerSettings) {
-        current.value = Revision(settings, ++revisions)
+    private fun show(settings: DrawerSettings, undo: Boolean = false) {
+        current.value = Revision(settings, undo)
         observers.forEach { it(settings) }
     }
-
-    private val observers = CopyOnWriteArrayList<(DrawerSettings) -> Unit>()
 
     /**
      * Calls [observer] with the settings now (once read) and on every change, synchronously, on
@@ -160,7 +170,7 @@ class SettingsRepository private constructor(context: Context) {
         while (true) {
             val (next, nextVersion) = synchronized(stateLock) {
                 // Undone after a save failed, or already written by a later change's save (which
-                // wrote this one too).
+                // wrote this one too). In that order: an undo also brings the disk version up.
                 if (undoneThrough >= mine) {
                     return false
                 }
@@ -183,8 +193,10 @@ class SettingsRepository private constructor(context: Context) {
                 synchronized(stateLock) {
                     // Nothing newer to try: back to what's on disk.
                     if (version == nextVersion) {
-                        show(checkNotNull(onDisk))
+                        show(checkNotNull(onDisk), undo = true)
                         undoneThrough = nextVersion
+                        // Memory matches the disk again: nothing pending.
+                        onDiskVersion = nextVersion
                         return false
                     }
                 }

@@ -31,10 +31,12 @@ internal fun <T> KeptLoad<T>?.keep(next: LoadedPinned<T>?): KeptLoad<T>? = when 
     next.apps == null && this?.load?.apps != null -> KeptLoad(load.restrictedTo(next.keys), failed = true)
     // Some apps still couldn't be listed (the load already retried them): their earlier copy, if
     // any, is kept rather than dropped. Only those with no copy to show make it a failure (so
-    // opening the drawer tries again); launching a kept one just says it isn't available.
+    // opening the drawer tries again); launching a kept one just says it isn't available. With
+    // nothing at all to show it's a failed load (null), not a list of unavailable apps.
     next.apps != null && next.unknown.isNotEmpty() -> {
         val earlier = this?.load?.apps.orEmpty().filterKeys { it in next.unknown }
-        KeptLoad(LoadedPinned(next.keys, earlier + next.apps, next.unknown), failed = !earlier.keys.containsAll(next.unknown))
+        val shown = (earlier + next.apps).takeIf { it.isNotEmpty() }
+        KeptLoad(LoadedPinned(next.keys, shown, next.unknown), failed = !earlier.keys.containsAll(next.unknown))
     }
     else -> KeptLoad(next, failed = next.apps == null)
 }

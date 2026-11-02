@@ -84,4 +84,12 @@ class PinnedStateTest {
         assertEquals(listOf("a/a.A", "b/b.B", "c/c.C"), kept.load.ordered(listOf(a, b, c)))
         assertEquals(PinnedStatus.CURRENT, kept.status(setOf(a, b, c)))
     }
+
+    @Test
+    fun `a load that couldn't list any app, with no earlier copies, is a failed load`() {
+        val nothing = LoadedPinned(setOf(a, b), emptyMap<AppKey, String>(), unknown = setOf(a, b))
+        val kept = null.keep(nothing)!!
+        assertNull(kept.load.ordered(listOf(a, b)))
+        assertEquals(PinnedStatus.FAILED, kept.status(setOf(a, b)))
+    }
 }

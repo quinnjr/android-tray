@@ -280,10 +280,10 @@ class EdgeService : LifecycleService() {
         // A failed load is retried whenever someone opens the drawer (e.g. LauncherApps wasn't
         // ready right after boot). (Not while a load is already running: that would only restart
         // it.) It shows as reloading at once, in this drawer's first frame: the pinned flow only
-        // gets there a dispatch later (and then says the same).
+        // gets there a dispatch later, through the same keep(null) step applied here.
         pinned.value?.let { p ->
             if (p.status == PinnedStatus.FAILED) {
-                pinned.value = p.copy(kept = p.kept.copy(reloading = true))
+                p.kept.keep(null)?.let { pinned.value = p.copy(kept = it) }
                 pinnedRetry.value++
             }
         }
@@ -353,13 +353,16 @@ class EdgeService : LifecycleService() {
                 // The settings take it at once (saving in the background, and reverting it if that
                 // fails), and so does the order shown (see settingsState).
                 val saved = repo.change { it.copy(apps = it.apps.withVisibleOrder(shownOrder)) }
-                // Not tied to this drawer: a drag saved as the drawer closes still reports failure.
-                lifecycleScope.launch {
-                    if (!saved.await()) {
-                        if (drawerJob.isActive) {
-                            showNotice(getString(R.string.settings_save_failed))
-                        } else {
-                            toastSaveFailed()
+                // Not tied to this drawer, nor to the service: a drag saved as the drawer closes (or
+                // the service stops) still reports failure.
+                saved.invokeOnCompletion { error ->
+                    if (error == null && !saved.getCompleted()) {
+                        ContextCompat.getMainExecutor(applicationContext).execute {
+                            if (drawerJob.isActive) {
+                                showNotice(getString(R.string.settings_save_failed))
+                            } else {
+                                applicationContext.toastSaveFailed()
+                            }
                         }
                     }
                 }

@@ -275,6 +275,8 @@ private fun Panel(
                             style = MaterialTheme.typography.bodyMedium,
                             modifier = Modifier.align(Alignment.Center).padding(24.dp),
                         )
+                        // None pinned: nothing to load, whatever the load did.
+                        pinned == null && current == PinnedStatus.FAILED -> NoApps(false, onOpenSettings, Modifier.fillMaxSize())
                         // Nothing loaded yet (or only an empty list, while pinned apps are reloading;
                         // with none pinned, "No apps yet" stays put through reloads).
                         pinned == null || (pinned.isEmpty() && current == PinnedStatus.RELOADING && hasPinned.value) -> CircularProgressIndicator(
