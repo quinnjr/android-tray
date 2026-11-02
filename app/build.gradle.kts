@@ -3,6 +3,13 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+/**
+ * Release signing comes from the environment (set by CI from repository secrets, or by hand for
+ * a local release build), so no key or password is ever in the repository. Without it the
+ * release build is left unsigned.
+ */
+val releaseKeystore: String? = System.getenv("RELEASE_KEYSTORE_PATH")
+
 android {
     namespace = "dev.quinnjr.android_drawer"
     compileSdk = 37
@@ -11,8 +18,30 @@ android {
         applicationId = "dev.quinnjr.android_drawer"
         minSdk = 29
         targetSdk = 37
-        versionCode = 1
+        // CI passes its run number, so every build it makes installs over the one before.
+        versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 1
         versionName = "0.1.0"
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("RELEASE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // Shrinks code and resources (the full Material icon set is most of the debug APK).
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.findByName("release")
+        }
     }
 
     buildFeatures {
